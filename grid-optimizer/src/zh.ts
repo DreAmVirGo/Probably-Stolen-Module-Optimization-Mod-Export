@@ -4,6 +4,14 @@
  * The page's own wording uses the same vocabulary.
  */
 export const ZH: Record<string, string> = {
+    'Module actions': '模组操作',
+    'Actions for {name}': '{name}的操作',
+    'Delete from warehouse…': '从仓库删除…',
+    'Right-click a warehouse module or use its menu to delete it.': '右键仓库内模组或点击卡片上的菜单，可删除该模组。',
+    'This module is now in a machine. Move it to the warehouse first.': '此模组现在已装入机器，请先卸回仓库。',
+    'Stuck modules cannot be deleted from the warehouse.': '卡住的模组不能从仓库删除。',
+    'This module is no longer in the warehouse.': '此模组已不在仓库中。',
+    'Wait until loading, optimization or dragging has finished.': '请等待加载、优化或拖动完成后再操作。',
     'Degradation protection': '退化保护',
     'Protection days': '保护天数',
     'Auto: {d}d': '自动：{d}天',
@@ -453,6 +461,17 @@ export const ZH: Record<string, string> = {
     'Add a module that is not in your save': '添加一个不在你存档中的模组',
     '+ Add Module': '+ 添加模组',
     'Added {item} to storage': '已将{item}加入储藏',
+
+    // ---- warehouse module removal
+    'Delete module from optimizer?': '要从优化器中删除此模组吗？',
+    'This only removes it from this optimizer. Your game save is unchanged. Reimporting the save restores imported modules.': '此操作只会从当前优化器中移除此模组，游戏存档不会改变。重新导入存档后，存档中的模组会再次出现。',
+    'Final confirmation': '最终确认',
+    'Delete this module from the optimizer now?': '确认现在从优化器中删除此模组吗？',
+    'I checked the module details and want to delete it.': '我已核对模组详情，确认要删除此模组。',
+    'Continue': '继续',
+    'Delete module': '删除模组',
+    'Cancel': '取消',
+    'Module ID: {id}': '模组编号：{id}',
 
     // ---- footer
     'How many CPU cores the optimizer may use. Applies from the next run': '优化器可使用的CPU核心数。下次运行时生效',
