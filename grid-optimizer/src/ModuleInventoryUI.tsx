@@ -3,6 +3,10 @@ import { encodeModExport, boardModules, machineUidKey } from './modExport';
 import { rememberSaveSettings, restoreSaveSettings } from './saveSettings';
 import { ALARM_SURE_STOP, harvestIcon, machineJobKey, alarmStopChance, defaultIgnoreStats, statUnit, defaultMaximizeStats, defaultTargetStats, desequencerDayOptions, desequencerChipsetKey, desequencerAutoDaysKey, statBreakpoints, isDesequencer, isMirage, isMoistureFarm, isAgeWell, sumsPE, jobSteps, isEvaporator, EVAPORATOR_QUALITY_CAP, worthlessBelowSteps, desequencerSpeed, desequencerCutoffs, statHasNoEffect, hiddenStat, statEffect, cheapEnergyAt, moistureFarmOutput, WATER_GRADES, miragePoints, STORE_BASE_ATTRACTIVENESS_KEY } from './machineDefaults';
 import { StatGoals } from './components/StatGoals';
+import { StatPercentages } from './components/StatPercentages';
+import { ModuleRemovalDialog } from './components/ModuleRemovalDialog';
+import { ModuleContextMenu } from './components/ModuleContextMenu';
+import { inventoryRemovalReason, removeInventoryItem } from './inventoryRemoval';
 import { DegradationStatus } from './components/DegradationStatus';
 import { taskProtectionDays } from './machineDefaults';
 import { readSolver, runSelectedSolver, setSolverLocked, SOLVER_SITES, subscribeSolver } from './solvers';
@@ -848,6 +852,7 @@ const MachineInstance = React.memo(forwardRef(({
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%', boxSizing: 'border-box' }}>
 
+                    <StatPercentages totals={optimizer.bestTotals} width={(7 * cellSize + 22) / 0.8} />
                     <StatGoals
                         machineType={typeKey}
                         machineId={machineId}
@@ -1233,12 +1238,8 @@ export default function ModuleInventoryUI() {
         setInventory(prev => prev.map(i => i.id === itemId ? { ...i, isLocked: !i.isLocked } : i));
     }, []);
 
-    // Modules added from the Add Module menu are not in the save; they can be taken out of storage again
-    const handleRemoveItem = useCallback((itemId: string) => {
-        setInventory(prev => prev.filter(i => i.id !== itemId));
-    }, []);
-
     const handleInventoryDragStart = useCallback((e: React.MouseEvent, item: InventoryItem) => {
+        if (e.button !== 0) return;
         if (isAnySolving) { e.preventDefault(); return; }
         e.preventDefault();
         const offsets = PRECOMPUTED_OFFSETS.get(item.shape)?.[0] || [{x: 0, y: 0}];
@@ -1441,6 +1442,54 @@ export default function ModuleInventoryUI() {
         if (liveStoredIds.length === 0) setStoredLayouts({});
     }, [liveStoredIds, storedIds, machines]);
     const [storeNote, setStoreNote] = useState<string | null>(null);
+    const [moduleMenu, setModuleMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+    const [removalId, setRemovalId] = useState<string | null>(null);
+    const [removalError, setRemovalError] = useState<string | null>(null);
+    const removalItem = inventory.find(item => item.id === removalId) ?? null;
+    const menuItem = inventory.find(item => item.id === moduleMenu?.id) ?? null;
+    const removalReason = (itemId: string) => inventoryRemovalReason({
+        itemId, inventory, usedIds: getUsedItems(null),
+        isSolving: isAnySolving || Object.values(solvingRef.current).some(Boolean),
+        isDragging: Boolean(dragRef.current),
+        boardsReady: machines.every(({ id }) => Boolean(machinesRef.current[id]?.getBoard())),
+    });
+    const removalMessage = (reason: ReturnType<typeof inventoryRemovalReason>) => reason === null ? null
+        : reason === 'placed' ? 'This module is now in a machine. Move it to the warehouse first.'
+        : reason === 'stuck' ? 'Stuck modules cannot be deleted from the warehouse.'
+        : reason === 'missing' || reason === 'clone' ? 'This module is no longer in the warehouse.'
+        : 'Wait until loading, optimization or dragging has finished.';
+    const openModuleMenu = (event: React.MouseEvent<HTMLElement>, itemId: string) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (isAnySolving || dragRef.current) return;
+        const rect = event.currentTarget.getBoundingClientRect();
+        setModuleMenu({ id: itemId, x: event.clientX || rect.left, y: event.clientY || rect.bottom });
+    };
+    const requestRemoval = (itemId: string) => {
+        setModuleMenu(null);
+        setRemovalId(itemId);
+        setRemovalError(removalMessage(removalReason(itemId)));
+    };
+    const confirmRemoval = (itemId: string) => {
+        const reason = removalReason(itemId);
+        if (reason !== null) { setRemovalError(removalMessage(reason)); return; }
+        const next = removeInventoryItem(itemId, inventory, storedIds, storedLayouts);
+        setInventory(next.inventory);
+        setStoredIds(next.storedIds);
+        setStoredLayouts(next.storedLayouts);
+        setHoverInfo(null);
+        setModuleMenu(null);
+        setRemovalId(null);
+        setRemovalError(null);
+        setStoreNote(null);
+        rememberSaveSettings();
+    };
+    useEffect(() => {
+        if (!isAnySolving && !dragState) return;
+        setModuleMenu(null);
+        setRemovalId(null);
+        setRemovalError(null);
+    }, [isAnySolving, dragState]);
     const idGrid = (board: any[][]): IdGrid => board.map(row => row.map(c => (c === 'Locked' ? 'Locked' : c ? c.id : null)));
     const handleStore = () => {
         const byId = indexInventoryById(expandedInventory);
@@ -2592,6 +2641,7 @@ export default function ModuleInventoryUI() {
                         </span>
                     </div>
                     {storeNote && <div style={{ color: '#888', fontSize: '0.8em', marginTop: '-8px', marginBottom: '10px' }}>{storeNote}</div>}
+                    <div style={{ color: '#888', fontSize: '0.75em', marginBottom: '10px' }}>{t('Right-click a warehouse module or use its menu to delete it.')}</div>
 
                     {unusedModules.length === 0 ? (
                         <div style={{ color: '#777', fontSize: '0.85em', textAlign: 'center', padding: '30px 10px' }}>
@@ -2611,6 +2661,7 @@ export default function ModuleInventoryUI() {
                                         key={item.id}
                                         className="catalog-card"
                                         onMouseDown={(e) => { if (canDrag) handleInventoryDragStart(e, item); }}
+                                        onContextMenu={(e) => openModuleMenu(e, item.id)}
                                         title={[moduleName(item.displayName), effects, item.originalPath ? t('In game: {path}', { path: placeLabel(item.originalPath) }) : added ? t('Added here, not in your save') : null, canDrag ? t('Drag onto a machine to place it') : null].filter(Boolean).join('\n')}
                                         style={{
                                             padding: '14px 10px', width: '135px', backgroundColor: '#252526',
@@ -2619,17 +2670,15 @@ export default function ModuleInventoryUI() {
                                             cursor: canDrag ? 'grab' : 'default', userSelect: 'none', position: 'relative'
                                         }}
                                     >
-                                        {added && (
-                                            <button
-                                                onMouseDown={e => e.stopPropagation()}
-                                                onClick={() => handleRemoveItem(item.id)}
-                                                disabled={isAnySolving}
-                                                title={t('Remove this added module')}
-                                                style={{ position: 'absolute', top: '2px', right: '4px', background: 'none', border: 'none', color: '#777', cursor: isAnySolving ? 'not-allowed' : 'pointer', fontSize: '1.1em', lineHeight: 1, padding: '2px' }}
-                                            >
-                                                &times;
-                                            </button>
-                                        )}
+                                        <button type="button" aria-haspopup="menu"
+                                            aria-label={t('Actions for {name}', { name: moduleName(item.displayName) })}
+                                            onMouseDown={e => e.stopPropagation()}
+                                            onClick={e => openModuleMenu(e, item.id)}
+                                            disabled={isAnySolving || Boolean(dragState)}
+                                            title={t('Module actions')}
+                                            style={{ position: 'absolute', top: '3px', right: '4px', background: '#333', border: '1px solid #555', borderRadius: '4px', color: '#ddd', cursor: isAnySolving ? 'not-allowed' : 'pointer', fontSize: '1.1em', lineHeight: 1, padding: '2px 5px' }}>
+                                            ⋯
+                                        </button>
                                         <div style={{ height: '50px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                                             <MiniShape shape={item.shape} colorHex={COLOR_MAP[item.color as ModuleColor]} />
                                         </div>
@@ -2651,6 +2700,12 @@ export default function ModuleInventoryUI() {
 
             </div>
 
+            {moduleMenu && menuItem && <ModuleContextMenu item={menuItem} x={moduleMenu.x} y={moduleMenu.y}
+                disabled={removalReason(menuItem.id) !== null}
+                reason={removalMessage(removalReason(menuItem.id))}
+                onClose={() => setModuleMenu(null)} onDelete={() => requestRemoval(menuItem.id)} />}
+            <ModuleRemovalDialog key={removalId} item={removalItem} disabled={isAnySolving || Boolean(dragState)}
+                error={removalError} onCancel={() => { setRemovalId(null); setRemovalError(null); }} onConfirm={confirmRemoval} />
             <DragGhost dragState={dragState} cellSize={cellSize} />
         </div>
     );
