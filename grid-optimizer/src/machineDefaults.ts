@@ -69,7 +69,7 @@ export const defaultMaximizeStats = (ignored: StatFlags): StatFlags => ({
 //   Desequencer    - Performance: 33 + (33 * P) / 100 work a day (MachineProgressHelper); a keycard takes whole days, so only the cut-offs
 //                    where some chipset's card finishes a day sooner matter. Checked against the game: the guide's 90% for Security in 2 days is 91%
 // `short` is the chip label where space is tight
-export type StatBreakpoint = { value: number; label: string; hint: string; short?: string };
+export type StatBreakpoint = { value: number; label: string; hint: string; short?: string; days?: number; work?: number; dailyWork?: (pct: number) => number };
 
 const PURITIES = ['Low Purity', 'Fair Purity', 'High Purity', 'Very High Purity', 'Perfect Purity'];
 
@@ -368,6 +368,9 @@ export type StatUnit = {
     // For energy: a smaller number is the better one, so a target is a ceiling
     lowerIsBetter?: boolean;
     step: number;
+    // Bounds in the displayed unit, checked before converting a manual target.
+    min?: number;
+    max?: number;
     // Shown on hover over the target box and the readout
     hint?: string;
     // Readout under the stat, when it needs more than "<value> <unit>"
@@ -397,10 +400,12 @@ const energyUnit = (rule: EnergyRule): StatUnit => ({
     fromPercent: (eff, totals) => energyOf(rule, eff, totals?.Performance ?? 0),
     // The least Efficiency that gets energy down to the value asked for
     toPercent: (value, totals) => {
+        if (!Number.isFinite(value) || value < 1) return NaN;
         for (let eff = -500; eff <= 1000; eff++) if (energyOf(rule, eff, totals?.Performance ?? 0) <= value) return eff;
-        return 1000;
+        return NaN;
     },
     step: 1,
+    min: 1,
     lowerIsBetter: true,
 });
 /* AgeWell: Performance lowers energy the same way Efficiency does, so its card works on their sum (MachineConfig.sumPE). The
@@ -413,10 +418,12 @@ const combinedEnergyUnit = (rule: EnergyRule): StatUnit => ({
         ? energyOf(rule, totals.Efficiency, totals.Performance)
         : energyOf(rule, sum, 0),
     toPercent: (value) => {
+        if (!Number.isFinite(value) || value < 1) return NaN;
         for (let sum = -500; sum <= 1000; sum++) if (energyOf(rule, sum, 0) <= value) return sum;
-        return 1000;
+        return NaN;
     },
     step: 1,
+    min: 1,
     lowerIsBetter: true,
 });
 
@@ -431,10 +438,19 @@ const speedUnit = (speed: (pct: number) => number): StatUnit => ({
     get unit() { return t('/day'); },
     fromPercent: speed,
     toPercent: value => {
-        for (let p = -500; p <= 2000; p++) if (speed(p) >= value) return p;
-        return 2000;
+        if (!Number.isFinite(value) || value < 0) return NaN;
+        let low = -500, high = 2000;
+        while (speed(high) < value && high < Number.MAX_SAFE_INTEGER) high = Math.min(Number.MAX_SAFE_INTEGER, high * 2);
+        if (speed(high) < value) return NaN;
+        while (low < high) {
+            const mid = low + Math.floor((high - low) / 2);
+            if (speed(mid) >= value) high = mid;
+            else low = mid + 1;
+        }
+        return low;
     },
     step: 1,
+    min: 0,
 });
 /* Jobs: the Hydroponic System grows a plant, the DNA Manipulator runs an operation, the 3D Printer prints a chip. Each takes a fixed
  * amount of work (MachineProgressHelper: the machine adds its work a day until the job's is reached), so Performance pays off in whole
@@ -464,7 +480,7 @@ const daySteps = (work: number, speed: (pct: number) => number, job: string): St
         const d = Math.ceil(work / s);
         if (d >= days) continue;
         days = d;
-        out.push({ value: p, label: t('{job} {d}d', { job: t(job), d }), short: t('{d}d', { d }),
+        out.push({ value: p, days: d, work, dailyWork: speed, label: t('{job} {d}d', { job: t(job), d }), short: t('{d}d', { d }),
             hint: t('{job}: {d} day{s} ({speed} work a day, {work} needed)', { job: t(job), d, s: plural(d), speed: s, work }) });
     }
     return out;
@@ -731,12 +747,34 @@ export const jobSteps = (machineType: string, machineId: string, stat: StatKey3)
     return job.steps[stat] ?? null;
 };
 
+// Protect all target stats for the selected multi-day job, even when its speed is on Auto.
+// A manually entered speed uses the same job breakpoints. No translated labels are parsed.
+export const taskProtectionDays = (machineType: string, machineId: string, performance: number): number => {
+    if (isDesequencer(machineType)) {
+        let work = 150;
+        try { work = Number(localStorage.getItem(desequencerChipsetKey(machineId))) || 150; } catch { /* Command */ }
+        const speed = desequencerSpeed(performance);
+        return speed > 0 ? Math.max(1, Math.ceil(work / speed)) : 365;
+    }
+    const steps = jobSteps(machineType, machineId, 'Performance');
+    const job = steps?.find(s => s.work !== undefined && s.dailyWork);
+    if (job) {
+        const speed = job.dailyWork!(performance);
+        // A stopped machine cannot finish; keep a finite long protection horizon.
+        return speed > 0 ? Math.max(1, Math.ceil(job.work! / speed)) : 365;
+    }
+    const reached = steps?.filter(s => s.value <= performance && s.days !== undefined).at(-1);
+    return reached?.days ?? steps?.find(s => s.days !== undefined)?.days ?? 1;
+};
+
 // A stat read as a plain number: base + Quality / per (rounded toward zero), `min`/`max` where the game clamps it
 const linearUnit = (unit: () => string, base: number, per: number, min = -Infinity, max = Infinity): StatUnit => ({
     get unit() { return unit(); },
     fromPercent: pct => Math.min(max, Math.max(min, base + Math.trunc(Math.trunc(pct) / per))),
-    toPercent: value => (Math.min(value, max) - base) * per,
+    toPercent: value => !Number.isFinite(value) || value < min || value > max ? NaN : (Math.ceil(value) - base) * per,
     step: 1,
+    min,
+    max,
 });
 // The Evaporator keeps at most all of what it evaporates: Quality past 100% does nothing (MachineEvaporator: Math.Clamp(Quality, 0, 100))
 export const EVAPORATOR_QUALITY_CAP = 100;
@@ -768,6 +806,7 @@ const STAT_UNITS: [string, 'Performance' | 'Quality' | 'Efficiency', StatUnit][]
         fromPercent: pct => Math.max(0, 3 * (100 + Math.trunc(pct))),
         toPercent: ml => Math.ceil(ml / 3 - 100 - 1e-9),
         step: 10,
+        min: 0,
     }],
     // Quality at each machine's quality ratio (ModuleHelper.GetAjustedQuality: Quality / ratio)
     //   Hydroponic (ratio 2): harvest x (1 + Q/2 %) (HydroponicHelper.GetHarvestCount)
@@ -786,6 +825,8 @@ const STAT_UNITS: [string, 'Performance' | 'Quality' | 'Efficiency', StatUnit][]
         fromPercent: pct => alarmStopChance(pct),
         toPercent: chance => Math.ceil(chance - 51),
         step: 1,
+        min: 0,
+        max: 100,
         get hint() { return t('Chance to stop a theft: 51% plus Performance, up to 100%. The game shows 1% less: it rolls 0-99 against its shown chance + 1, so 49% Performance already stops every theft'); },
     }],
     // One farm on its own: farms running the same night share the air (moistureFarmOutput)
@@ -795,6 +836,7 @@ const STAT_UNITS: [string, 'Performance' | 'Quality' | 'Efficiency', StatUnit][]
         // Rounded up, so the target always reaches the volume asked for
         toPercent: ml => Math.ceil((ml * 100) / MOISTURE_FARM_BASE_ML - 100 - 1e-9),
         step: 10,
+        min: 0,
     }],
     /* Purifier: a night removes up to (25 ml + 0.3% of the water, at most 10 L of it) x 1.25 x (dirt factor + Performance / 100) of
      * contaminants, largest first, never past the purity cap Quality sets (MachinePurifier.PurifyContainer, RemoveLargestFirst). The dirt
@@ -806,6 +848,7 @@ const STAT_UNITS: [string, 'Performance' | 'Quality' | 'Efficiency', StatUnit][]
         fromPercent: pct => Math.floor(PURIFIER_JUG_ML * 10 * Math.max(0, 1 + Math.trunc(pct) / 100)) / 10,
         toPercent: ml => Math.ceil((ml / PURIFIER_JUG_ML - 1) * 100 - 1e-9),
         step: 1,
+        min: 0,
         get hint() { return t('Contaminants removed a night from a full 6 L jug of near-clean water: 53.75 ml, +1% per 1% Performance (dirty water goes up to 20 times faster). Never past the purity cap that Quality sets'); },
     }],
 ];

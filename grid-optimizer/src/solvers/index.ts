@@ -159,11 +159,13 @@ export const runSelectedSolver = async (
     isSolvingRef: { current: boolean },
     onUpdate: (updates: Updates, tiers?: number[]) => void
 ): Promise<void> => {
+    // Temporal hard targets require Bloom's dual current/future objective.
+    if (machines.some(m => (m.degradationDays ?? 0) > 0 && Object.entries(m.targetStats).some(([key, target]) => target !== null && !m.ignoreStats?.[key as keyof Stats]))) kind = 'bloom';
     const inventoryById = indexInventoryById(fullInventory);
-    const pinned = (item: InventoryItem) => Boolean(item.isStuck) || (kind !== 'bloom' && isMachineModuleName(item.displayName));
+    const pinned = (item: InventoryItem) => kind !== 'bloom' && (Boolean(item.isStuck) || isMachineModuleName(item.displayName));
     const pin = pinStuck(machines, boards, fullInventory, inventoryById, pinned);
     // Pinned modules are never drawn, wherever they are: their snapshots know nothing of which machine takes a machine-specific module
-    searchPoolInventory = searchPoolInventory.filter(item => !pinned(item));
+    searchPoolInventory = searchPoolInventory.filter(item => !pinned(item) && !item.isStuck);
     /* Nor is a special (machine-specific, Alarm, Junk Processing, Blast) from storage, locked or not: which of them a machine carries is the
      * player's call. One already on a board being solved stays where it is. (The other solvers know the specials by older names, and
      * their module locks are taken off below)

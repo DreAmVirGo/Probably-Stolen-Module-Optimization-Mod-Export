@@ -8,6 +8,7 @@
  * modules are rows in typed arrays, and the scoring functions are the exact typed equivalents (checked cell for cell against the originals)
  */
 import type { InventoryItem, ModuleShape, Stats } from '../types';
+import { projectDegradation } from '../degradation';
 import { applyInternalEffects, getBaseStats } from '../utils';
 import type { Orientation } from '../utils';
 import { calculateBoardStats, indexInventoryById, isSpecialModule, buildSearchPool, generateCodeFromState } from '../hooks/useOptimizer';
@@ -175,11 +176,17 @@ const paramsOf = (m: MachineConfig): MachineParams => ({
 // (Performance past capP counts for nothing: a Moisture Farm's container holds 6000 ml)
 // A water farm's Purity target is the grade it is to make: Quality past it is worth nothing more (so it does not overshoot)
 const waterQuality = (p: MachineParams, q: number) => (p.target[1] !== null ? Math.min(q, p.target[1]) : q);
-const statOf = (p: MachineParams, t: Totals, s: number) => {
+const currentStatOf = (p: MachineParams, t: Totals, s: number) => {
     const tp = p.capP !== undefined ? Math.min(t.p, p.capP) : t.p;
     return s === 0 && p.water ? waterValue(tp, waterQuality(p, t.q)) : s === 0 && p.sumPQ ? tp + 2 * t.q : s === 2 && p.sumPE ? t.e + t.p : s === 0 ? tp
         : s === 1 && p.capQ !== undefined ? Math.min(t.q, p.capQ) : totalOf(t, s);
 };
+
+// Only explicit user targets use the projected total. Auto (including a stat eased by a stalled
+// search) is always valued at its current output.
+const statOf = (p: MachineParams, t: Totals, s: number) =>
+    p.target[s] !== null && t.protectedTargets?.[s] !== null && t.protectedTargets?.[s] !== undefined
+        ? t.protectedTargets[s]! : currentStatOf(p, t, s);
 
 // How much a maximized point of each stat is worth: Efficiency half, so Performance and Quality always come first
 const MAXIMIZE_WEIGHT = [1, 1, 0.5];
@@ -277,6 +284,9 @@ export const stallOrders = (machines: MachineConfig[], targets: (number | null)[
             const next = sorted.find(v => v > value);
             eases.push({ mIdx, s, rank, step, progress: next === undefined ? 1 : (value - step) / (next - step) });
         } else if (target !== null && value < target) {
+            // A protected user target is a hard threshold throughout the selected horizon.
+            // Nor may a typed custom target be silently replaced by one of the preset steps.
+            if (((m.degradationDays ?? 0) > 0 && m.targetStats[key] !== null) || !steps.includes(target)) return;
             if (relax === null || rank > relax.rank || (rank === relax.rank && mIdx > relax.mIdx)) relax = { mIdx, s, rank };
         }
     }));
@@ -353,13 +363,53 @@ export const runOptimizationEngine = async (
     const internalById = new Map<string, Stats>();
     itemList.forEach(item => internalById.set(item.id, applyInternalEffects(item)));
     const core = createTypedCore(itemList, item => internalById.get(item.id)!);
+    // Project effects before evaluating the whole board, so node, mount, receiver and
+    // negative-feedback rounding is the same as today's totals. No Learning gains are assumed.
+    const projectedCores = new Map<number, ReturnType<typeof createTypedCore>>();
+    const endCore = machines.map(m => {
+        const days = Math.max(0, Math.floor(m.degradationDays ?? 0));
+        if (!days || !STAT_KEYS.some(k => m.targetStats[k] !== null && !statIsIgnored(m, k))) return core;
+        let projected = projectedCores.get(days);
+        if (!projected) {
+            const items = itemList.map(item => projectDegradation(item, days));
+            projected = createTypedCore(items, applyInternalEffects);
+            projectedCores.set(days, projected);
+        }
+        return projected;
+    });
+    const boardTotals = (board: Board, mIdx: number): Totals => {
+        const today = core.boardTotals(board);
+        if (endCore[mIdx] === core) return today;
+        const last = endCore[mIdx].boardTotals(board);
+        const p = callerParams[mIdx];
+        return { ...today, protectedTargets: STAT_KEYS.map((_, s) => p.target[s] !== null && !p.ignored[s]
+            ? Math.min(currentStatOf(p, today, s), currentStatOf(p, last, s)) : null) };
+    };
+    // Greedy placement uses the end-of-horizon stats for dimensions that serve a target,
+    // while the acceptance score below keeps today's values for every Auto objective.
+    const fillCores = machines.map((m, k) => {
+        if (endCore[k] === core) return core;
+        const targetP = !statIsIgnored(m, 'Performance') && m.targetStats.Performance !== null;
+        const targetQ = !statIsIgnored(m, 'Quality') && m.targetStats.Quality !== null;
+        const targetE = !statIsIgnored(m, 'Efficiency') && m.targetStats.Efficiency !== null;
+        return createTypedCore(itemList, item => {
+            const now = internalById.get(item.id)!;
+            const later = applyInternalEffects(projectDegradation(item, m.degradationDays!));
+            return {
+                Performance: targetP || (m.sumPE && targetE) ? later.Performance : now.Performance,
+                Quality: targetQ || (m.sumPQ && targetP) ? later.Quality : now.Quality,
+                Efficiency: targetE ? later.Efficiency : now.Efficiency,
+            };
+        });
+    });
+    const fillCoreFor = new Map(params.map((p, k) => [p, fillCores[k]]));
     const N = core.count;
     const idx = (item: InventoryItem) => core.indexOf.get(item.id)!;
 
     // A module that came in locked on a board (right-click; the specials, Alarm / Junk Processing / Blast, start locked) belongs to its
     // board: it moves around it but never leaves. An unlocked special may be taken off; it is never put on another board (see buildSearchPool)
     const fixed = new Uint8Array(N);
-    initialObjectBoards.forEach(b => b.forEach((row: any[]) => row.forEach(cell => { if (cell && cell !== 'Locked' && cell.isLocked) fixed[idx(cell)] = 1; })));
+    initialObjectBoards.forEach(b => b.forEach((row: any[]) => row.forEach(cell => { if (cell && cell !== 'Locked' && (cell.isLocked || cell.isStuck)) fixed[idx(cell)] = 1; })));
     const overclock = new Uint8Array(N);
     const ocBonus = new Float64Array(N);
     // Learning Algorithm modules other than Overclocks, still short of their cap (see LEARNING_BONUS)
@@ -416,7 +466,7 @@ export const runOptimizationEngine = async (
      */
     const groupOf = (() => {
         const keys = machines.map((m, mIdx) => JSON.stringify([tierOfStat[mIdx], params[mIdx], stepsOf[mIdx], lockedMask(initialBoards[mIdx]),
-            m.performanceCap ?? null, m.worthlessBelowSteps ?? null]));
+            m.performanceCap ?? null, m.worthlessBelowSteps ?? null, m.degradationDays ?? 0]));
         const groups: number[][] = [];
         keys.forEach((k, mIdx) => {
             const g = groups.find(gr => keys[gr[0]] === k);
@@ -458,7 +508,7 @@ export const runOptimizationEngine = async (
     const canBeFull = params.map(p => [0, 1, 2].some(s => !p.ignored[s] && p.maximize[s])
         && [0, 1, 2].every(s => p.ignored[s] || !p.maximize[s] || capOf(p, s) !== undefined));
     const isFull = (p: MachineParams, t: Totals) => meetsTargets(p, t)
-        && [0, 1, 2].every(s => p.ignored[s] || !p.maximize[s] || statOf(p, t, s) >= capOf(p, s)!);
+        && [0, 1, 2].every(s => p.ignored[s] || !p.maximize[s] || currentStatOf(p, t, s) >= capOf(p, s)!);
     const meetsTargets = (p: MachineParams, t: Totals) => {
         for (let s = 0; s < 3; s++) {
             const target = p.target[s];
@@ -507,7 +557,7 @@ export const runOptimizationEngine = async (
         // modules back is then a step up, not a coin flip the refill undoes by drawing them straight back
         return isTargetOnly[mIdx] || (canBeFull[mIdx] && isFull(p, t)) ? held + overshoot - bonus : t.pieces * 5 + overshoot - bonus;
     };
-    const score = (board: Board): Scored => ({ ...core.boardTotals(board), tb: 0, tbGen: -1 });
+    const score = (board: Board, mIdx: number): Scored => ({ ...boardTotals(board, mIdx), tb: 0, tbGen: -1 });
 
     // Scores a set of boards into `tiers`; `ps` is whose targets to measure against (this run's, or the caller's for reports)
     // `steer`: scores for the search to climb by, where a water farm's progress towards its next grade (waterProgress) counts with its
@@ -527,7 +577,7 @@ export const runOptimizationEngine = async (
                     if (stepsOf[mIdx][s]) tiers[ti] -= STEP_MISS_PENALTY * 10000;
                 }
                 if (p.maximize[s]) {
-                    tiers[ti + RANK_OFFSET] += maximizedWorth(p, v, s) * 10;
+                    tiers[ti + RANK_OFFSET] += maximizedWorth(p, currentStatOf(p, st, s), s) * 10;
                     if (s === 0 && p.water) {
                         const progress = waterProgress(p.capP !== undefined ? Math.min(st.p, p.capP) : st.p, waterQuality(p, st.q)) * 10;
                         if (steer) tiers[ti + RANK_OFFSET] += progress * MAXIMIZE_WEIGHT[0]; else tiers[TIEBREAK_TIER] += progress;
@@ -589,7 +639,7 @@ export const runOptimizationEngine = async (
             for (let i = 0; i < P; i++) {
                 const it = searchPool[i];
                 if (core.white[it] || core.size[it] === 0) continue;
-                values[i] = (core.IP[it] * w[0] + core.IQ[it] * w[1] + core.IE[it] * w[2]) / core.size[it];
+                values[i] = (fillCores[mIdx].IP[it] * w[0] + fillCores[mIdx].IQ[it] * w[1] + fillCores[mIdx].IE[it] * w[2]) / core.size[it];
                 stated.push(values[i]);
             }
             // Nodes are worth what they add beside other modules, which only the placement sees; the median keeps them drawn like an ordinary module
@@ -654,7 +704,8 @@ export const runOptimizationEngine = async (
     const committed = new Float64Array(3);
     const placeBestFit = (it: number, board: Board, boardIsEmpty: boolean, w: number[], cur: number[], p: MachineParams,
         incumbent: { x: number; y: number; o: Orientation } | null = null) => {
-        const orientations = core.orientations[it];
+        const placementCore = fillCoreFor.get(p) ?? core;
+        const orientations = placementCore.orientations[it];
         if (!orientations) return false;
         let bestX = -1, bestY = -1;
         let bestO: Orientation | null = null;
@@ -663,10 +714,10 @@ export const runOptimizationEngine = async (
         const nudge = overclock[it] || learner[it] ? OVERCLOCK_PLACEMENT_NUDGE : 0;
         const zeroOk = nudge > 0;
         if (incumbent !== null) {
-            const s = core.evalPlacement(it, incumbent.x, incumbent.y, incumbent.o, board, boardIsEmpty, w[0], w[1], w[2], cur[0], cur[1], cur[2], p, zeroOk);
+            const s = placementCore.evalPlacement(it, incumbent.x, incumbent.y, incumbent.o, board, boardIsEmpty, w[0], w[1], w[2], cur[0], cur[1], cur[2], p, zeroOk);
             if (s !== -Infinity) {
                 best = s + nudge;
-                d0 = core.delta[0]; d1 = core.delta[1]; d2 = core.delta[2];
+                d0 = placementCore.delta[0]; d1 = placementCore.delta[1]; d2 = placementCore.delta[2];
                 bestX = incumbent.x; bestY = incumbent.y; bestO = incumbent.o;
             }
         }
@@ -675,10 +726,10 @@ export const runOptimizationEngine = async (
             for (let k = 0; k < orientations.length; k++) {
                 const o = orientations[k];
                 if (x + o.minX < 0 || x + o.maxX > 6 || y + o.minY < 0 || y + o.maxY > 4) continue;
-                const s = core.evalPlacement(it, x, y, o, board, boardIsEmpty, w[0], w[1], w[2], cur[0], cur[1], cur[2], p, zeroOk) + nudge;
+                const s = placementCore.evalPlacement(it, x, y, o, board, boardIsEmpty, w[0], w[1], w[2], cur[0], cur[1], cur[2], p, zeroOk) + nudge;
                 if (s > best && s !== -Infinity) {
                     best = s;
-                    d0 = core.delta[0]; d1 = core.delta[1]; d2 = core.delta[2];
+                    d0 = placementCore.delta[0]; d1 = placementCore.delta[1]; d2 = placementCore.delta[2];
                     bestX = x; bestY = y; bestO = o;
                 }
             }
@@ -739,7 +790,7 @@ export const runOptimizationEngine = async (
         let changed = false;
         for (let mIdx = 0; mIdx < machineCount; mIdx++) {
             const board = boards[mIdx];
-            const full = !isTargetOnly[mIdx] && canBeFull[mIdx] && params[mIdx].maximize.some(Boolean) && isFull(params[mIdx], core.boardTotals(board));
+            const full = !isTargetOnly[mIdx] && canBeFull[mIdx] && params[mIdx].maximize.some(Boolean) && isFull(params[mIdx], boardTotals(board, mIdx));
             if (!isTargetOnly[mIdx] && !full) continue;
             const holds = (t: Totals) => (full ? isFull(params[mIdx], t) : meetsTargets(params[mIdx], t));
             const own: number[] = [];
@@ -754,7 +805,7 @@ export const runOptimizationEngine = async (
                 const candidates = spare.filter(q => core.shape[q] === core.shape[piece] && value[q] < value[piece]).sort((a, b) => value[a] - value[b]);
                 for (const cand of candidates) {
                     swap(piece, cand);
-                    if (holds(core.boardTotals(board))) {
+                    if (holds(boardTotals(board, mIdx))) {
                         spare.splice(spare.indexOf(cand), 1);
                         spare.push(piece);
                         changed = true;
@@ -830,7 +881,7 @@ export const runOptimizationEngine = async (
      */
     const lateTargets: [number, number][] = [];
     if (machineCount > 1 && (relaxOrders || STALL)) {
-        params.forEach((p, mIdx) => { if (p.water && p.target[1] !== null) { lateTargets.push([mIdx, p.target[1]]); p.target[1] = null; } });
+        params.forEach((p, mIdx) => { if (p.water && p.target[1] !== null && !(machines[mIdx].degradationDays! > 0)) { lateTargets.push([mIdx, p.target[1]]); p.target[1] = null; } });
         if (lateTargets.length > 0) tbGen++;
     }
     // The boards it starts from are the record to beat and the first step to climb from: at -Infinity the first move always counted as an
@@ -847,7 +898,7 @@ export const runOptimizationEngine = async (
             if (isActive(mIdx)) continue;
             const b = currentBoards[mIdx];
             for (let c = 0; c < CELLS; c++) if (b[c] >= 0 && !fixed[b[c]]) b[c] = EMPTY;
-            currentStats[mIdx] = score(b);
+            currentStats[mIdx] = score(b, mIdx);
         }
     };
     clearInactive();
@@ -883,6 +934,7 @@ export const runOptimizationEngine = async (
         }
     };
     const lowerTarget = (mIdx: number, s: number) => {
+        if ((machines[mIdx].degradationDays ?? 0) > 0 && callerParams[mIdx].target[s] !== null) return;
         const current = params[mIdx].target[s];
         const steps = stepsOf[mIdx][s];
         if (current === null || !steps) return;
@@ -918,7 +970,7 @@ export const runOptimizationEngine = async (
             for (const mIdx of free) { const k = JSON.stringify(params[mIdx]); bySettings.set(k, [...(bySettings.get(k) ?? []), mIdx]); }
             bySettings.forEach(movable => {
                 if (movable.length < 2) return;
-                const worth = (j: number) => { let w = 0; for (let s = 0; s < 3; s++) if (params[j].maximize[s]) w += maximizedWorth(params[j], statOf(params[j], stats[j], s), s); return w; };
+                const worth = (j: number) => { let w = 0; for (let s = 0; s < 3; s++) if (params[j].maximize[s]) w += maximizedWorth(params[j], currentStatOf(params[j], stats[j], s), s); return w; };
                 const sorted = [...movable].sort((a, b) => worth(b) - worth(a) || a - b);
                 movable.forEach((mIdx, i) => { from[mIdx] = sorted[i]; });
             });
@@ -931,7 +983,7 @@ export const runOptimizationEngine = async (
         const updates: EngineUpdates = new Map();
         const spare = withSpareLearningAlgorithms(bestBoards);
         const unordered = spare ? spare.boards : bestBoards;
-        const unorderedStats = spare ? unordered.map((b, mIdx) => spare.changed.has(mIdx) ? score(b) : bestStats[mIdx]) : bestStats;
+        const unorderedStats = spare ? unordered.map((b, mIdx) => spare.changed.has(mIdx) ? score(b, mIdx) : bestStats[mIdx]) : bestStats;
         const from = orderGroups(unordered, unorderedStats);
         const boards = from.map(j => unordered[j]);
         const stats = from.map(j => unorderedStats[j]);
@@ -1098,7 +1150,7 @@ export const runOptimizationEngine = async (
         shuffle(relayoutPieces);
         rebuildFreeCells(board);
         let boardIsEmpty = freeCells.length === openCellCount[k];
-        const t = core.boardTotals(board);
+        const t = fillCores[k].boardTotals(board);
         cur[0] = t.p; cur[1] = t.q; cur[2] = t.e;
         w[0] = baseWeights[k][0]; w[1] = baseWeights[k][1]; w[2] = baseWeights[k][2];
         for (const it of relayoutPieces) {
@@ -1135,7 +1187,7 @@ export const runOptimizationEngine = async (
             const x = statOf(p, t, s);
             const target = p.target[s];
             if (target !== null && x < target) v -= (target - x) * 1000;
-            if (p.maximize[s]) v += maximizedWorth(p, x, s) * 10;
+            if (p.maximize[s]) v += maximizedWorth(p, currentStatOf(p, t, s), s) * 10;
         }
         if (p.water && p.maximize[0]) v += waterProgress(p.capP !== undefined ? Math.min(t.p, p.capP) : t.p, waterQuality(p, t.q)) * 10;
         return v;
@@ -1175,7 +1227,7 @@ export const runOptimizationEngine = async (
             while (fi < windowFree.length && board[windowFree[fi]] !== EMPTY) fi++;
             if (fi === windowFree.length) {
                 leaves++;
-                const v = machineWorth(k, core.boardTotals(board));
+                const v = machineWorth(k, boardTotals(board, k));
                 if (v > bestWorth) { bestWorth = v; windowBest.set(board); }
                 return;
             }
@@ -1265,6 +1317,8 @@ export const runOptimizationEngine = async (
         for (let c = 0; c < CELLS; c++) if (board[c] >= 0) { empty = false; break; }
         let best = -Infinity;
         const sumPQ = s === 0 && params[k].sumPQ;
+        const sumPE = s === 2 && params[k].sumPE;
+        const placementCore = callerParams[k].target[s] !== null ? endCore[k] : core;
         for (const it of reps) {
             if (it === skip) continue;
             const orientations = core.orientations[it];
@@ -1273,9 +1327,9 @@ export const runOptimizationEngine = async (
                 if (board[c] !== EMPTY) continue;
                 const x = c % 7, y = (c - x) / 7;
                 for (const o of orientations) {
-                    const r = core.evalPlacement(it, x, y, o, board, empty, 0, 0, 0, 0, 0, 0, params[k], true);
+                    const r = placementCore.evalPlacement(it, x, y, o, board, empty, 0, 0, 0, 0, 0, 0, params[k], true);
                     if (r <= -9000) continue;
-                    const g = sumPQ ? core.delta[0] + 2 * core.delta[1] : core.delta[s];
+                    const g = sumPQ ? placementCore.delta[0] + 2 * placementCore.delta[1] : sumPE ? placementCore.delta[2] + placementCore.delta[0] : placementCore.delta[s];
                     if (g <= best) continue;
                     best = g;
                     if (second) { out.it2 = it; out.x2 = x; out.y2 = y; out.o2 = o; } else { out.it = it; out.x = x; out.y = y; out.o = o; }
@@ -1289,6 +1343,8 @@ export const runOptimizationEngine = async (
         let empty = true;
         for (let c = 0; c < CELLS; c++) if (board[c] >= 0) { empty = false; break; }
         const sumPQ = s === 0 && params[k].sumPQ;
+        const sumPE = s === 2 && params[k].sumPE;
+        const placementCore = callerParams[k].target[s] !== null ? endCore[k] : core;
         for (const it of reps) {
             const orientations = core.orientations[it];
             if (!orientations) continue;
@@ -1296,9 +1352,9 @@ export const runOptimizationEngine = async (
                 if (board[c] !== EMPTY) continue;
                 const x = c % 7, y = (c - x) / 7;
                 for (const o of orientations) {
-                    const r = core.evalPlacement(it, x, y, o, board, empty, 0, 0, 0, 0, 0, 0, params[k], true);
+                    const r = placementCore.evalPlacement(it, x, y, o, board, empty, 0, 0, 0, 0, 0, 0, params[k], true);
                     if (r <= -9000) continue;
-                    const gain = baseValue + (sumPQ ? core.delta[0] + 2 * core.delta[1] : core.delta[s]) - valueNow;
+                    const gain = baseValue + (sumPQ ? placementCore.delta[0] + 2 * placementCore.delta[1] : sumPE ? placementCore.delta[2] + placementCore.delta[0] : placementCore.delta[s]) - valueNow;
                     if (gain <= 0) continue;
                     keepMove({ a, it, x, y, o, it2: -1, x2: 0, y2: 0, o2: null, gain });
                 }
@@ -1334,7 +1390,7 @@ export const runOptimizationEngine = async (
             if (now() > deadline) return false;
             polishBoard.set(bestBoards[k]);
             if (a >= 0) lift(polishBoard, a);
-            const baseValue = a >= 0 ? valueOf(k, s, core.boardTotals(polishBoard)) : valueNow;
+            const baseValue = a >= 0 ? valueOf(k, s, boardTotals(polishBoard, k)) : valueNow;
             scanAdds(k, s, polishBoard, reps, a, baseValue, valueNow);
             // One out, two in: the best first module, then the best second next to it
             const g1 = bestAdd(k, s, polishBoard, reps, -1, two, false);
@@ -1366,9 +1422,9 @@ export const runOptimizationEngine = async (
                 if (mv.it >= 0 && polishOwner[mv.it] === j) lift(b, mv.it);
                 if (mv.it2 >= 0 && polishOwner[mv.it2] === j) lift(b, mv.it2);
                 otherBoards.set(j, b);
-                otherStats.set(j, score(b));
+                otherStats.set(j, score(b, j));
             }
-            const mine = score(polishBoard);
+            const mine = score(polishBoard, k);
             // A stepped target only counts once reached: points towards a step it still misses do nothing in the game
             if (mustReach !== null && valueOf(k, s, mine) < mustReach) continue;
             scoreInto(polishTiers, (m) => m === k ? mine : otherStats.get(m) ?? bestStats[m], (m) => m === k ? polishBoard : otherBoards.get(m) ?? bestBoards[m]);
@@ -1381,8 +1437,8 @@ export const runOptimizationEngine = async (
         }
         if (pick === null) return false;
         bestBoards[k].set(polishOther);
-        bestStats[k] = score(bestBoards[k]);
-        ((pick as any).boards as Map<number, Board>).forEach((b, j) => { bestBoards[j].set(b); bestStats[j] = score(bestBoards[j]); });
+        bestStats[k] = score(bestBoards[k], k);
+        ((pick as any).boards as Map<number, Board>).forEach((b, j) => { bestBoards[j].set(b); bestStats[j] = score(bestBoards[j], j); });
         scoreInto(bestTiers, (m) => bestStats[m], (m) => bestBoards[m]);
         // The search carries on from where it is (sending it back to the record measured worse); it meets the record at its next restart
         codeIsStale.fill(true);
@@ -1453,6 +1509,7 @@ export const runOptimizationEngine = async (
                     for (let c = 0; c < CELLS; c++) {
                         const a = board[c];
                         if (a < 0) continue;
+                        if (itemList[a].isStuck) continue;
                         if (fixed[a]) {
                             let entry = specials.find(e => e.item === a);
                             if (entry === undefined) { entry = { item: a, cells: [] }; specials.push(entry); }
@@ -1557,7 +1614,7 @@ export const runOptimizationEngine = async (
                 }
                 rebuildFreeCells(board);
                 let boardIsEmpty = freeCells.length === openCellCount[fillMIdx];
-                let t = core.boardTotals(board);
+                let t = fillCores[fillMIdx].boardTotals(board);
                 cur[0] = t.p; cur[1] = t.q; cur[2] = t.e;
 
                 // Specials first: all together now and then (see REPACK_ONE_IN), otherwise each offered a better cell with the others standing still
@@ -1565,7 +1622,7 @@ export const runOptimizationEngine = async (
                 const repacked = specials.length > 0 && (isStagnant || Math.random() * REPACK_EVERY < 1) && repackSpecials(board, specials);
                 if (repacked) {
                     boardIsEmpty = false;
-                    t = core.boardTotals(board);
+                    t = fillCores[fillMIdx].boardTotals(board);
                     cur[0] = t.p; cur[1] = t.q; cur[2] = t.e;
                 } else {
                     for (const sp of specials) {
@@ -1584,7 +1641,7 @@ export const runOptimizationEngine = async (
                         for (const c of sp.cells) { board[c] = EMPTY; freeCells.push(c); }
                         placeBestFit(sp.item, board, boardIsEmpty, w, cur, p, home === null ? null : { x: hx, y: hy, o: home });
                         boardIsEmpty = false;
-                        t = core.boardTotals(board);
+                        t = fillCores[fillMIdx].boardTotals(board);
                         cur[0] = t.p; cur[1] = t.q; cur[2] = t.e;
                     }
                 }
@@ -1653,7 +1710,7 @@ export const runOptimizationEngine = async (
             }
             }
 
-            for (const mIdx of rebuiltMachines) rebuiltStats[mIdx] = score(testBoards[mIdx]);
+            for (const mIdx of rebuiltMachines) rebuiltStats[mIdx] = score(testBoards[mIdx], mIdx);
             const statsFor = (mIdx: number) => isRebuilt[mIdx] ? rebuiltStats[mIdx] : currentStats[mIdx];
             const boardsFor = (mIdx: number) => isRebuilt[mIdx] ? testBoards[mIdx] : currentBoards[mIdx];
             scoreInto(currentTiers, statsFor, boardsFor, params, true);
@@ -1695,7 +1752,7 @@ export const runOptimizationEngine = async (
                 stagnationCounter = 0;
                 // Hand strong modules held by target-only machines back to the pool while the search can still use them
                 if (downgradeTargetMachines(currentBoards)) {
-                    for (let mIdx = 0; mIdx < machineCount; mIdx++) currentStats[mIdx] = score(currentBoards[mIdx]);
+                    for (let mIdx = 0; mIdx < machineCount; mIdx++) currentStats[mIdx] = score(currentBoards[mIdx], mIdx);
                 }
                 if (++stagnationRuns >= RESTART_AFTER_STAGNATIONS) {
                     stagnationRuns = 0;
@@ -1718,7 +1775,7 @@ export const runOptimizationEngine = async (
                             const a = initialBoards[k][c];
                             b[c] = a >= 0 && itemStamp[a] === g ? EMPTY : a;
                         }
-                        currentStats[k] = score(b);
+                        currentStats[k] = score(b, k);
                     }
                 }
             }
@@ -1740,7 +1797,7 @@ export const runOptimizationEngine = async (
         // Final clean-up of the reported layout: target-only machines give up any module a weaker one can replace
         if (relaxOrders) checkRelax();
         if (downgradeTargetMachines(bestBoards)) {
-            for (let mIdx = 0; mIdx < machineCount; mIdx++) bestStats[mIdx] = score(bestBoards[mIdx]);
+            for (let mIdx = 0; mIdx < machineCount; mIdx++) bestStats[mIdx] = score(bestBoards[mIdx], mIdx);
             codeIsStale.fill(true);
             pendingUpdate = true;
         }

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { Stats } from '../types';
 import { rememberSaveSettings } from '../saveSettings';
+import { parseTargetValue } from '../targetValue';
 import {
     statBreakpoints, statUnit, statName, statHasNoEffect, hiddenStat, sumsPE,
     machineJobs, machineJobKey, isDesequencer, isMirage, MIRAGE_QUALITY_WEIGHT, miragePoints, miragePointsFor, mirageSumFor, DESEQUENCER_CHIPSETS, desequencerDayOptions, desequencerSpeed,
@@ -55,6 +56,19 @@ const POINTS: StatUnit = {
     step: 1,
 };
 
+// The Desequencer displays work per day, so its manual target uses that same unit.
+// Invert the game's truncation towards zero, including speeds below its base 33.
+const DESEQUENCER_SPEED: StatUnit = {
+    get unit() { return t('/day'); },
+    fromPercent: desequencerSpeed,
+    toPercent: speed => {
+        const delta = Math.ceil(speed) - 33;
+        return delta > 0 ? Math.ceil(delta * 100 / 33) : Math.floor((delta - 1) * 100 / 33) + 1;
+    },
+    step: 1,
+    min: 0,
+};
+
 // Target typed in a machine's own unit (e.g. ml/day), stored as the % the solver works with
 // Saved on every keystroke (leaving the box is not needed: a click on the grid or a Run can skip the blur), while the box keeps
 // showing the text as typed, since converting every keystroke back for display would rewrite a half-typed number
@@ -62,27 +76,41 @@ const TargetInput = ({ unit, target, onChange, disabled, totals, placeholder }: 
     unit: StatUnit | null; target: number | null; onChange: (pct: number | null) => void; disabled: boolean; totals: Stats; placeholder?: string;
 }) => {
     const shown = target === null ? '' : String(unit ? unit.fromPercent(target, totals) : target);
-    const [draft, setDraft] = useState<string | null>(null);
+    // Tag a draft with the target it produced. An external target change immediately
+    // shows the new target, while typing can retain incomplete text and its error.
+    const [editing, setEditing] = useState<{ text: string; target: number | null; error: string | null } | null>(null);
+    const draft = editing?.target === target ? editing : null;
+    const error = draft?.error;
     const commit = (text: string) => {
-        if (text.trim() === '') { if (placeholder) onChange(null); return; }
-        if (isNaN(Number(text))) return;
-        onChange(unit ? unit.toPercent(Number(text), totals) : Math.round(Number(text)));
+        if (text.trim() === '') { setEditing({ text, target, error: null }); if (placeholder) onChange(null); return true; }
+        const parsed = parseTargetValue(text, unit, totals);
+        setEditing({ text, target: parsed.error === undefined ? parsed.value : target, error: parsed.error ?? null });
+        if (parsed.error !== undefined) return false;
+        onChange(parsed.value);
+        return true;
     };
     return (
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+        <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: '3px' }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
             <input
                 type="number"
                 step={unit ? unit.step : 1}
-                value={draft ?? shown}
+                min={unit ? (Number.isFinite(unit.min) ? unit.min : undefined) : -2048}
+                max={unit ? (Number.isFinite(unit.max) ? unit.max : undefined) : 2047}
+                aria-label={t('Manual target')}
+                aria-invalid={Boolean(error)}
+                value={draft?.text ?? shown}
                 placeholder={placeholder}
-                onChange={(e) => { setDraft(e.target.value); commit(e.target.value); }}
-                onBlur={(e) => { commit(e.target.value); setDraft(null); }}
+                onChange={(e) => { commit(e.target.value); }}
+                onBlur={(e) => { if (commit(e.target.value)) setEditing(null); }}
                 onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
                 disabled={disabled}
                 title={unit?.hint}
-                style={{ width: '80px', padding: '3px 6px', fontSize: '0.85em', backgroundColor: C.field, color: '#eee', border: `1px solid ${C.fieldBorder}`, borderRadius: '4px', textAlign: 'center' }}
+                style={{ width: '80px', padding: '3px 6px', fontSize: '0.85em', backgroundColor: C.field, color: '#eee', border: `1px solid ${error ? C.far : C.fieldBorder}`, borderRadius: '4px', textAlign: 'center' }}
             />
             <span style={{ fontSize: '0.8em', color: C.sub }}>{unit ? unit.unit : '%'}</span>
+            </span>
+            {error && <span role="alert" style={{ color: C.far, fontSize: '0.75em', maxWidth: '260px', textAlign: 'center' }}>{t(error)}</span>}
         </span>
     );
 };
@@ -179,6 +207,8 @@ type Props = {
     toggles?: boolean;
     // Told the job when one is picked (the Hydroponic card shows what the picked plant harvests)
     onJobChange?: (key: string) => void;
+    // Recompute parent settings that depend on a chipset even if no target changed.
+    onContextChange?: () => void;
 };
 
 type Card = {
@@ -208,9 +238,10 @@ const MODE_LABEL: Record<Mode, string> = { auto: 'Auto', target: 'Target', off: 
 
 // One card per stat (the Mirage Projector's Performance and Quality share one): the stat's name, the result it gives this machine,
 // and its modes in a strip along the bottom. A mode that takes a value opens its choices under the cards
-export const StatGoals = ({ machineType, machineId, totals, ignoreStats, targetStats, setIgnoreStats, setTargetStats, limitStats, setLimitStats, disabled, hasBlast, width, autoLabel = 'Auto', toggles = false, onJobChange }: Props) => {
+export const StatGoals = ({ machineType, machineId, totals, ignoreStats, targetStats, setIgnoreStats, setTargetStats, limitStats, setLimitStats, disabled, hasBlast, width, autoLabel = 'Auto', toggles = false, onJobChange, onContextChange }: Props) => {
     useLang();
     const [open, setOpen] = useState<string | null>(null);
+    const [presetRevision, setPresetRevision] = useState(0);
     const rootRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -226,8 +257,10 @@ export const StatGoals = ({ machineType, machineId, totals, ignoreStats, targetS
     });
     const setChipset = (work: number) => {
         setChipsetState(work);
+        setPresetRevision(n => n + 1);
         try { localStorage.setItem(chipsetKey, String(work)); } catch { /* per-viewer convenience only */ }
         rememberSaveSettings();
+        onContextChange?.();
     };
     // Desequencer days on Auto: maximized, eased to the picked chipset's day breakpoints (read by the solve, see targetSteps)
     const autoDaysKey = desequencerAutoDaysKey(machineId);
@@ -252,9 +285,14 @@ export const StatGoals = ({ machineType, machineId, totals, ignoreStats, targetS
     const job = jobs ? jobs.jobs.find(j => j.key === jobPick) ?? jobs.jobs[0] : null;
 
     const setTarget = (stat: StatKey, value: number | null) => setTargetStats((prev: any) => ({ ...prev, [stat]: value }));
+    const pickTarget = (stat: StatKey, value: number | null) => {
+        setPresetRevision(n => n + 1);
+        setTarget(stat, value);
+    };
     // A new job moves the targets set on its steps to the new job's next step up
     const pickJob = (key: string) => {
         setJobPick(key);
+        setPresetRevision(n => n + 1);
         try { localStorage.setItem(jobKey, key); } catch { /* per-viewer convenience only */ }
         onJobChange?.(key);
         rememberSaveSettings();
@@ -266,6 +304,7 @@ export const StatGoals = ({ machineType, machineId, totals, ignoreStats, targetS
                 const steps = next.steps[stat];
                 // A job with no steps for the stat (Hydroreed's Harvest) leaves its target as it is
                 if (!steps || steps.length === 0 || out[stat] === null || out[stat] === undefined) continue;
+                if (!job?.steps[stat]?.some(step => step.value === out[stat])) continue;
                 out[stat] = (steps.find(s => s.value >= out[stat]) ?? steps[steps.length - 1]).value;
             }
             return out;
@@ -287,6 +326,7 @@ export const StatGoals = ({ machineType, machineId, totals, ignoreStats, targetS
         const unit = statUnit(machineType, stat);
         const energy = Boolean(unit?.lowerIsBetter);
         const deseq = stat === 'Performance' && isDesequencer(machineType);
+        const inputUnit = deseq ? DESEQUENCER_SPEED : unit;
         // A job with no steps for this stat (Hydroreed harvests nothing, so its Harvest has none) takes a plain number instead
         const jobStepList = job?.steps[stat]?.length ? job.steps[stat]! : null;
         const breakpoints = deseq ? null : jobStepList ?? statBreakpoints(machineType, stat, hasBlast);
@@ -297,7 +337,7 @@ export const StatGoals = ({ machineType, machineId, totals, ignoreStats, targetS
         // Chipset in use: the saved pick (Command until one is made) if the goal is one of its steps, else the first chipset the goal belongs to
         const work = (() => {
             const preferred = chipset ?? 150;
-            if (!deseq || target === null) return preferred;
+            if (!deseq || target === null || chipset !== null) return preferred;
             const fitsGoal = (wk: number) => desequencerDayOptions(wk).some(o => o.value === target);
             if (fitsGoal(preferred)) return preferred;
             return DESEQUENCER_CHIPSETS.find(c => fitsGoal(c.work))?.work ?? preferred;
@@ -313,7 +353,7 @@ export const StatGoals = ({ machineType, machineId, totals, ignoreStats, targetS
 
         const goal = deseq && autoDays && target === null ? t('{chip}, days on Auto', { chip: t(chip.short) })
             : target === null ? null
-            : deseq ? (() => { const d = desequencerDayOptions(work).find(o => o.value === target)?.days; return d !== undefined ? t('{chip} {d}d', { chip: t(chip.short), d }) : `${target}%`; })()
+            : deseq ? (() => { const d = desequencerDayOptions(work).find(o => o.value === target)?.days; return d !== undefined ? t('{chip} {d}d', { chip: t(chip.short), d }) : withUnit(desequencerSpeed(target), t('/day')); })()
             : breakpoints?.find(b => b.value === target) ? stepName(breakpoints.find(b => b.value === target)!)
             : unit ? withUnit(unit.fromPercent(target, totals), unit.unit)
             : `${target}%`;
@@ -365,16 +405,22 @@ export const StatGoals = ({ machineType, machineId, totals, ignoreStats, targetS
                 panel = (
                     <SegBar disabled={disabled} total={total} target={autoDays && target === null ? null : target}
                         picker={{ value: String(work), options: DESEQUENCER_CHIPSETS.map(c => ({ value: String(c.work), label: `${t(c.name)} (${c.work})` })),
-                            onChange: (v) => { const wk = Number(v); setChipset(wk); if (!autoDays) setTarget(stat, nextStepAbove(desequencerDayOptions(wk))); } }}
+                            onChange: (v) => {
+                                const wk = Number(v);
+                                setChipset(wk);
+                                if (!autoDays && desequencerDayOptions(work).some(option => option.value === target)) {
+                                    pickTarget(stat, nextStepAbove(desequencerDayOptions(wk)));
+                                }
+                            } }}
                         steps={[{ value: null, label: t('Auto'), title: t("As fast as the modules allow, counted in this chipset's whole days") },
                             ...desequencerDayOptions(work).map(o => ({ value: o.value, label: t('{d}d', { d: o.days }), title: reachText(o.value, total) }))]}
-                        onPick={(v) => { setAutoDays(v === null); setTarget(stat, v); }} />
+                        onPick={(v) => { setAutoDays(v === null); pickTarget(stat, v); }} />
                 );
             } else if (jobs && (jobStepList || stat !== 'Efficiency')) {
                 // The job picker; a job with no steps for this stat (the DNA Manipulator's "Any seed") takes a plain number instead
                 const picker = { value: job!.key, title: jobs.label, options: jobs.jobs.map(j => ({ value: j.key, label: j.name })), onChange: pickJob };
                 panel = jobStepList
-                    ? <SegBar disabled={disabled} picker={picker} steps={stepCells(jobStepList, total, true)} target={target} total={total} onPick={(v) => v !== null && setTarget(stat, v)} />
+                    ? <SegBar disabled={disabled} picker={picker} steps={stepCells(jobStepList, total, true)} target={target} total={total} onPick={(v) => v !== null && pickTarget(stat, v)} />
                     : (
                         <SegBar disabled={disabled} picker={picker}>
                             <TargetInput unit={unit} target={target} totals={totals} onChange={(pct) => pct !== null && setTarget(stat, pct)} disabled={disabled} />
@@ -382,10 +428,22 @@ export const StatGoals = ({ machineType, machineId, totals, ignoreStats, targetS
                     );
                 segmented = true;
             } else if (breakpoints) {
-                panel = <SegBar disabled={disabled} steps={stepCells(breakpoints, total)} target={target} total={total} onPick={(v) => v !== null && setTarget(stat, v)} />;
+                panel = <SegBar disabled={disabled} steps={stepCells(breakpoints, total)} target={target} total={total} onPick={(v) => v !== null && pickTarget(stat, v)} />;
                 segmented = true;
             } else {
                 panel = <TargetInput unit={unit} target={target} totals={totals} onChange={(pct) => pct !== null && setTarget(stat, pct)} disabled={disabled} />;
+            }
+            // Keep the presets, and always offer a number field for stats whose panel
+            // previously only allowed selecting a predefined breakpoint or day count.
+            if (deseq || breakpoints) {
+                panel = <>
+                    {panel}
+                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '0.85em', color: C.sub }}>
+                        {t('Manual target')}
+                        <TargetInput unit={inputUnit} target={target} totals={totals}
+                            onChange={(pct) => { if (pct !== null) { if (deseq) setAutoDays(false); setTarget(stat, pct); } }} disabled={disabled} />
+                    </label>
+                </>;
             }
         }
 
@@ -552,7 +610,7 @@ export const StatGoals = ({ machineType, machineId, totals, ignoreStats, targetS
             </div>
 
             {openCard && (
-                <div onKeyDown={(e) => e.stopPropagation()} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                <div key={`${openCard.key}:${presetRevision}`} onKeyDown={(e) => e.stopPropagation()} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
                     {openCard.panel}
                     {openCard.gap && <span style={{ fontSize: '0.75em', color: openCard.color }}>{openCard.gap}</span>}
                 </div>

@@ -12,6 +12,11 @@ A fork of [hoydoy/probably-stolen-module-optimization](https://github.com/hoydoy
 - **No leaderboard submissions.** Results are not sent to the original site's Supabase leaderboard, and the original site's analytics script is removed.
 - **Smarter targets.** A target (Tar %) is a hard minimum that outranks card order. A machine whose stats are all targets reaches them with the weakest modules that suffice, leaving strong modules for machines that maximize, and a clean-up pass swaps out any module a weaker same-shaped one can replace.
 - **Layout.** Machine cards show the machine's icon and short name in the header, stat cards toggle on/off with a click, and the page toolbar sits at the top.
+- **Manual targets.** Every target can be typed in the unit shown on its card, alongside the existing breakpoint and day buttons. Invalid or unexportable values show an error instead of silently changing the goal.
+- **Degradation protection.** Targets are checked at today's output and after the protected number of daily uses, including node, receiver, mount and negative-feedback effects. Multi-day job targets automatically protect their full duration; the protection field can extend it. The card reports the first day a target falls below its threshold and flags an unsafe layout even when today's output meets the goal. Auto stats can fall. Protection uses Bloom and never silently lowers an explicit target.
+- **Stable machine order.** Reimporting a save keeps each machine's order and settings by its game uid, even after it moves or its path is renumbered. Renamed downloads and day backups from the same save slot share the latest order. New machines go last.
+
+Degradation forecasts assume one active use each day, subtract one percentage point per Degrading effect/use down to zero, and do not credit future Learning Algorithm gains. The protected endpoint includes the final day's use, providing a conservative margin. If the available modules cannot meet every target for that period, the card remains visibly unsafe; optimization does not guarantee a feasible solution exists.
 
 ## Machine breakpoints
 
