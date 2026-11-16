@@ -659,6 +659,8 @@ export type MachineConfig = {
     id: string;
     tier: GridTier;
     targetStats: TargetStats;
+    // Future daily uses through which explicit targets must remain met (Auto is scored today).
+    degradationDays?: number;
     maximizeStats: any;
     ignoreStats?: Partial<Record<keyof Stats, boolean>>;
     // Rank per stat, 1 being the most important
@@ -1146,7 +1148,7 @@ export function useOptimizer(
     }, [inventory, tier, maximizeStats, targetStats, ignoreStats, statPriority, machineId, getUsedItems, board, isSolving, isExternallySolving]);
 
     const runOptimization = async (targetSteps?: MachineConfig['targetSteps'], sumPQ?: boolean, water?: boolean,
-        worthlessBelowSteps?: MachineConfig['worthlessBelowSteps'], sumPE?: boolean, performanceCap?: number, cheapEnergyAt?: number, qualityCap?: number) => {
+        worthlessBelowSteps?: MachineConfig['worthlessBelowSteps'], sumPE?: boolean, performanceCap?: number, cheapEnergyAt?: number, qualityCap?: number, degradationDays?: number) => {
         if (isSolving) {
             isSolvingRef.current = false;
             return;
@@ -1177,7 +1179,7 @@ export function useOptimizer(
         isSolvingRef.current = true;
 
         // The other solvers (solvers/index.ts) rank this card's stats by its own priorities, as their sites do
-        const config = { id: machineId, tier, targetStats, maximizeStats, ignoreStats, targetSteps, sumPQ, water, worthlessBelowSteps, sumPE, performanceCap, qualityCap, cheapEnergyAt, ...(readSolver() !== 'bloom' ? { statPriority } : {}) };
+        const config = { id: machineId, tier, targetStats, degradationDays, maximizeStats, ignoreStats, targetSteps, sumPQ, water, worthlessBelowSteps, sumPE, performanceCap, qualityCap, cheapEnergyAt, ...(readSolver() !== 'bloom' ? { statPriority } : {}) };
 
         /* hoydoy's solver (solvers/index.ts) runs one search per card at once, as on his site, each kept off only what the other cards held
          * when it started: two of them could both take the same free module, and the page then showed it on both. A layout using a module

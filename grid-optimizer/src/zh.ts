@@ -4,6 +4,17 @@
  * The page's own wording uses the same vocabulary.
  */
 export const ZH: Record<string, string> = {
+    'Degradation protection': '退化保护',
+    'Protection days': '保护天数',
+    'Auto: {d}d': '自动：{d}天',
+    'Protect targets for {d}d': '确保目标维持{d}天',
+    'One degradation use per day; no future Learning gains counted. Auto stats may fall.': '按每天触发1次退化估算，不预支学习收益；自动数值允许下降。',
+    'Target protection uses the Bloom solver.': '目标退化保护使用 Bloom 求解器。',
+    'Unsafe: a target fails within {d}d. Optimize again or change the target.': '未满足保护：{d}天内有目标不达标，请重新优化或调整目标。',
+    'Targets safe through {d}d of degradation.': '目标可承受{d}天退化。',
+    'Already below target': '当前已低于目标',
+    'Stays within target after degradation': '退化耗尽后仍满足目标',
+    'Below target after {d}d': '{d}天后低于目标',
     // ---- page
     'Module Optimizer (Mod Export)': '模组优化器（模组导出）',
     'Language': '语言',
@@ -166,6 +177,11 @@ export const ZH: Record<string, string> = {
     'Auto': '自动',
     'Max': '最大',
     'Target': '目标',
+    'Manual target': '手动目标',
+    'Enter a finite number.': '请输入有效的有限数值。',
+    'This value is outside the supported range for this stat.': '该数值超出了此属性支持的范围。',
+    'This target cannot be reached in this unit.': '此单位下无法达到该目标。',
+    'Target must be between -2048% and 2047%.': '目标对应的属性百分比须在 -2048% 至 2047% 之间。',
     'Off': '关闭',
     'Volume': '产量',
     'Purity': '纯度',

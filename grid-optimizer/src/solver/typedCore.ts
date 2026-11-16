@@ -49,6 +49,8 @@ export interface Totals {
     q: number;
     e: number;
     pieces: number;
+    // Minimum current/end-of-horizon values for explicit user targets only.
+    protectedTargets?: (number | null)[];
 }
 
 export const totalOf = (t: Totals, s: number) => (s === 0 ? t.p : s === 1 ? t.q : t.e);

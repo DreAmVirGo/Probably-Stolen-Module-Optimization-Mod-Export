@@ -3,6 +3,8 @@ import { encodeModExport, boardModules, machineUidKey } from './modExport';
 import { rememberSaveSettings, restoreSaveSettings } from './saveSettings';
 import { ALARM_SURE_STOP, harvestIcon, machineJobKey, alarmStopChance, defaultIgnoreStats, statUnit, defaultMaximizeStats, defaultTargetStats, desequencerDayOptions, desequencerChipsetKey, desequencerAutoDaysKey, statBreakpoints, isDesequencer, isMirage, isMoistureFarm, isAgeWell, sumsPE, jobSteps, isEvaporator, EVAPORATOR_QUALITY_CAP, worthlessBelowSteps, desequencerSpeed, desequencerCutoffs, statHasNoEffect, hiddenStat, statEffect, cheapEnergyAt, moistureFarmOutput, WATER_GRADES, miragePoints, STORE_BASE_ATTRACTIVENESS_KEY } from './machineDefaults';
 import { StatGoals } from './components/StatGoals';
+import { DegradationStatus } from './components/DegradationStatus';
+import { taskProtectionDays } from './machineDefaults';
 import { readSolver, runSelectedSolver, setSolverLocked, SOLVER_SITES, subscribeSolver } from './solvers';
 import { StatPriorities } from './components/StatPriorities';
 import type { Stats, GridTier, InventoryItem, ModuleColor, Point } from './types';
@@ -267,9 +269,29 @@ const MachineInstance = React.memo(forwardRef(({
     // card's name, which may be one the player gave it ("CMD Card" for a Desequencer). Cards added by hand are named by their type
     const [machineKind] = useState<string | null>(() => localStorage.getItem(`optimizer_machine_kind_${machineId}`));
     const typeKey = machineKind ?? machineType;
+    const [degradationDaysOverride, setDegradationDaysOverride] = useState<number | null>(() => {
+        try {
+            const raw = localStorage.getItem(`optimizer_degradation_days_${machineId}`);
+            const value = raw === null ? NaN : Number(raw);
+            return Number.isInteger(value) && value >= 1 && value <= 365 ? value : null;
+        } catch { return null; }
+    });
+    useEffect(() => {
+        try {
+            const key = `optimizer_degradation_days_${machineId}`;
+            if (degradationDaysOverride === null) localStorage.removeItem(key);
+            else localStorage.setItem(key, String(degradationDaysOverride));
+        } catch { /* per-viewer convenience */ }
+        rememberSaveSettings();
+    }, [machineId, degradationDaysOverride]);
     const machineIconUrl = machineIcon(typeKey);
     // Hydroponic System: what the picked plant harvests, by the modules on the board (harvestIcon), shown beside the machine's icon
     const [jobPick, setJobPick] = useState<string | null>(() => { try { return localStorage.getItem(machineJobKey(machineId)); } catch { return null; } });
+    const [, refreshGoalContext] = useState(0);
+    const automaticDegradationDays = () => taskProtectionDays(typeKey, machineId,
+        !optimizer.ignoreStats.Performance && optimizer.targetStats.Performance !== null
+            ? optimizer.targetStats.Performance : optimizer.bestTotals.Performance);
+    const degradationDays = () => Math.max(automaticDegradationDays(), degradationDaysOverride ?? 1);
     const harvest = typeKey.toLowerCase().includes('hydroponic') ? harvestIcon(jobPick, new Set(optimizer.board.flat()
         .filter((c: any) => c && c !== 'Locked').map((c: any) => c.displayName as string))) : null;
     // A Blast module shifts every Furnace breakpoint up by 100%
@@ -394,7 +416,7 @@ const MachineInstance = React.memo(forwardRef(({
     }, [showPaths, optimizer.board]);
 
     const runSolo = () => optimizer.runOptimization(targetSteps(), isMirage(typeKey), waterMode(), worthlessBelowSteps(typeKey), sumsPE(typeKey),
-        undefined, cheapEnergyAt(typeKey), qualityCap());
+        undefined, cheapEnergyAt(typeKey), qualityCap(), degradationDays());
     useImperativeHandle(ref, () => ({
         run: optimizer.runOptimization,
         runSolo,
@@ -406,6 +428,7 @@ const MachineInstance = React.memo(forwardRef(({
             tier: optimizer.tier,
             maximizeStats: optimizer.maximizeStats,
             targetStats: optimizer.targetStats,
+            degradationDays: degradationDays(),
             ignoreStats: optimizer.ignoreStats,
             statPriority: optimizer.statPriority,
             targetSteps: targetSteps(),
@@ -841,6 +864,14 @@ const MachineInstance = React.memo(forwardRef(({
                         autoLabel={solverKind !== 'bloom' ? 'Max' : 'Auto'}
                         toggles={solverKind !== 'bloom'}
                         onJobChange={setJobPick}
+                        onContextChange={() => refreshGoalContext(value => value + 1)}
+                    />
+                    <DegradationStatus
+                        machineType={typeKey} board={optimizer.board} inventory={inventory}
+                        targets={optimizer.targetStats} ignored={optimizer.ignoreStats}
+                        days={degradationDays()} automaticDays={automaticDegradationDays()}
+                        override={degradationDaysOverride} setOverride={setDegradationDaysOverride}
+                        disabled={currentSolving} solver={solverKind}
                     />
                     {solverKind !== 'bloom' && (
                         <StatPriorities
@@ -1529,7 +1560,7 @@ export default function ModuleInventoryUI() {
         setStoredLayouts({});
         setStoreNote(null);
     };
-    const handleImportSave = useCallback((newItems: InventoryItem[], importedMachines: { id: string, boardIds: (string | null)[][], machineType: string, kind?: string, uid?: number, tier: GridTier, job?: string }[], save: string) => {
+    const handleImportSave = useCallback((newItems: InventoryItem[], importedMachines: { id: string, boardIds: (string | null)[][], machineType: string, kind?: string, uid?: number, tier: GridTier, job?: string }[], save: string, saveSlot?: number | null) => {
         setInventory(newItems);
         // A new save's modules were never stored
         setStoredIds([]);
@@ -1549,7 +1580,7 @@ export default function ModuleInventoryUI() {
             return { boardIds: m.boardIds, tier: m.tier, ignoreStats, maximizeStats, targetStats };
         }, newItems, locks => {
             if (locks.size > 0) setInventory(newItems.map(it => locks.has(it.id) ? { ...it, isLocked: locks.get(it.id) } : it));
-        });
+        }, saveSlot);
         newMachines.forEach(m => {
             localStorage.setItem(`optimizer_machine_type_${m.id}`, m.machineType);
             localStorage.setItem(saveTierKey(m.id), String(m.tier));
@@ -1614,6 +1645,7 @@ export default function ModuleInventoryUI() {
         const groupKey = (state: any) => JSON.stringify([
             String(state.machineKind).split(' > ').pop()!.replace(/\s+\d+$/, '').trim().toLowerCase(),
             state.ignoreStats, state.targetStats, state.maximizeStats, state.targetSteps,
+            state.degradationDays,
         ]);
         const priorities: number[] = [];
         states.forEach((state, i) => {
@@ -1626,6 +1658,7 @@ export default function ModuleInventoryUI() {
                 id: m.id,
                 tier: state.tier,
                 targetStats: state.targetStats,
+                degradationDays: state.degradationDays,
                 maximizeStats: state.maximizeStats,
                 ignoreStats: state.ignoreStats,
                 // Card order is priority on this site's solver; the others keep each card's own stat priorities, as their sites do

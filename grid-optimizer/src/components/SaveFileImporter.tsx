@@ -10,8 +10,8 @@ import { t, useLang } from '../i18n';
 import type {InventoryItem, ModuleShape, ItemEffect, ModuleColor, Point, GridTier} from '../types';
 
 interface SaveFileImporterProps {
-    // `save` is the save's file name, which its remembered machine settings are kept under (see saveSettings.ts)
-    onImport: (newItems: InventoryItem[], newMachines: { id: string, boardIds: (string | null)[][], machineType: string, kind?: string, uid?: number, tier: GridTier, job?: string }[], save: string) => void;
+    // `save` is its filename; `slot` lets backups and renamed downloads share remembered settings.
+    onImport: (newItems: InventoryItem[], newMachines: { id: string, boardIds: (string | null)[][], machineType: string, kind?: string, uid?: number, tier: GridTier, job?: string }[], save: string, slot?: number | null) => void;
 }
 
 export default function SaveFileImporter({ onImport }: SaveFileImporterProps) {
@@ -568,17 +568,16 @@ export default function SaveFileImporter({ onImport }: SaveFileImporterProps) {
                 const baseAttract = /baseStoreAttractiveness\\?"\s*:\s*(-?\d+)/.exec(text);
                 if (baseAttract) localStorage.setItem(STORE_BASE_ATTRACTIVENESS_KEY, baseAttract[1]);
                 else localStorage.removeItem(STORE_BASE_ATTRACTIVENESS_KEY);
-                onImport(parsedInventory, newMachines, importedName);
-                localStorage.setItem(SAVE_NAME_KEY, importedName);
-                /* The save's slot, which the mod compares with the loaded game before trusting module uids. The game takes the slot from the
-                 * file name (save_26.es3 is slot 26); the saveSlotId inside the file is only rewritten when the game saves, so a save copied
-                 * into another slot still carries its old one (a copy of save_14 as save_26 says 14 until it is saved again). The id inside
-                 * is only used when the file name is not save_<n> (a renamed download such as "save_20 (1).es3"). The full release's day
-                 * backups (save_<n>_day<d>_<yyyyMMdd-HHmmss>, SaveFiles.HistoryFile) belong to slot n
+                /* The game takes the slot from a save_<n> filename (including day backups). Its saveSlotId can still
+                 * refer to an older slot after a file was copied, so it is only a fallback for renamed downloads.
+                 * Resolve this before restoring settings, while the old loaded save still owns the storage keys.
                  */
                 const slotFromName = /^save_(\d+)(?:_day\d+_\d{8}-\d{6})?$/i.exec(importedName)?.[1];
-                const slot = slotFromName ?? /"saveSlotId"\s*:\s*(\d+)/.exec(text)?.[1];
-                if (slot !== undefined) localStorage.setItem(SAVE_SLOT_KEY, slot);
+                const slotText = slotFromName ?? /"saveSlotId"\s*:\s*(\d+)/.exec(text)?.[1];
+                const slot = slotText !== undefined && Number.isSafeInteger(Number(slotText)) ? Number(slotText) : null;
+                onImport(parsedInventory, newMachines, importedName, slot);
+                localStorage.setItem(SAVE_NAME_KEY, importedName);
+                if (slot !== null) localStorage.setItem(SAVE_SLOT_KEY, String(slot));
                 else localStorage.removeItem(SAVE_SLOT_KEY);
                 setSaveName(importedName);
             } catch (err) {
