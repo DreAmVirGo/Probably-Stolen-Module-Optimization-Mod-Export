@@ -9,7 +9,8 @@
  */
 import type { InventoryItem, ModuleShape, Stats } from '../types';
 import { projectDegradation } from '../degradation';
-import { applyInternalEffects, getBaseStats } from '../utils';
+import { applyInternalEffects } from '../utils';
+import { getLearningProgress } from '../learningStatus';
 import type { Orientation } from '../utils';
 import { calculateBoardStats, indexInventoryById, isSpecialModule, buildSearchPool, generateCodeFromState } from '../hooks/useOptimizer';
 import type { MachineConfig } from '../hooks/useOptimizer';
@@ -403,6 +404,8 @@ export const runOptimizationEngine = async (
         });
     });
     const fillCoreFor = new Map(params.map((p, k) => [p, fillCores[k]]));
+    const canTrainHere = machines.map(machine => machine.canTrainLearning !== false);
+    const trainingAllowedFor = new Map(params.map((p, k) => [p, canTrainHere[k]]));
     const N = core.count;
     const idx = (item: InventoryItem) => core.indexOf.get(item.id)!;
 
@@ -412,19 +415,16 @@ export const runOptimizationEngine = async (
     initialObjectBoards.forEach(b => b.forEach((row: any[]) => row.forEach(cell => { if (cell && cell !== 'Locked' && (cell.isLocked || cell.isStuck)) fixed[idx(cell)] = 1; })));
     const overclock = new Uint8Array(N);
     const ocBonus = new Float64Array(N);
-    // Learning Algorithm modules other than Overclocks, still short of their cap (see LEARNING_BONUS)
+    // Learning Algorithm modules still short of their shaped cap (see LEARNING_BONUS).
     const learner = new Uint8Array(N);
     itemList.forEach((item, i) => {
+        const progress = getLearningProgress(item);
+        const trains = progress !== null && progress.current < progress.cap && !isSpecialModule(item);
+        if (trains) learner[i] = 1;
         if (item.displayName.includes('Overclock')) {
             overclock[i] = 1;
-            ocBonus[i] = item.effects.includes('Learning Algorithm') ? OVERCLOCK_BONUS * 2 : OVERCLOCK_BONUS;
-            return;
-        }
-        const l = item.effects.indexOf('Learning Algorithm');
-        if (l < 0 || isSpecialModule(item)) return;
-        const base = getBaseStats(item);
-        if ((item.effectValues[l] ?? 0) < Math.floor(Math.max(0, base.Performance, base.Quality, base.Efficiency) * 2)) {
-            learner[i] = 1;
+            ocBonus[i] = trains ? OVERCLOCK_BONUS * 2 : OVERCLOCK_BONUS;
+        } else if (trains) {
             ocBonus[i] = LEARNING_BONUS;
         }
     });
@@ -466,7 +466,7 @@ export const runOptimizationEngine = async (
      */
     const groupOf = (() => {
         const keys = machines.map((m, mIdx) => JSON.stringify([tierOfStat[mIdx], params[mIdx], stepsOf[mIdx], lockedMask(initialBoards[mIdx]),
-            m.performanceCap ?? null, m.worthlessBelowSteps ?? null, m.degradationDays ?? 0]));
+            m.performanceCap ?? null, m.worthlessBelowSteps ?? null, m.degradationDays ?? 0, m.canTrainLearning !== false]));
         const groups: number[][] = [];
         keys.forEach((k, mIdx) => {
             const g = groups.find(gr => keys[gr[0]] === k);
@@ -550,8 +550,10 @@ export const runOptimizationEngine = async (
             const a = board[c];
             if (a < 0 || tbStamp[a] === g) continue;
             tbStamp[a] = g;
-            if (!learner[a]) held += value[a];
-            bonus += ocBonus[a];
+            if (!learner[a] || !canTrainHere[mIdx]) held += value[a];
+            // Keep the ordinary Overclock preference, but do not reward training
+            // on machines such as the Deal Maker that never advance Learning.
+            bonus += canTrainHere[mIdx] ? ocBonus[a] : overclock[a] ? OVERCLOCK_BONUS : 0;
         }
         // A full machine (see isFull) pays for what it holds too, so of two layouts that keep it full the one holding less wins: handing
         // modules back is then a step up, not a coin flip the refill undoes by drawing them straight back
@@ -711,7 +713,7 @@ export const runOptimizationEngine = async (
         let bestO: Orientation | null = null;
         let best = incumbent !== null ? -Infinity : 0.0001;
         let d0 = 0, d1 = 0, d2 = 0;
-        const nudge = overclock[it] || learner[it] ? OVERCLOCK_PLACEMENT_NUDGE : 0;
+        const nudge = overclock[it] || (learner[it] && trainingAllowedFor.get(p)) ? OVERCLOCK_PLACEMENT_NUDGE : 0;
         const zeroOk = nudge > 0;
         if (incumbent !== null) {
             const s = placementCore.evalPlacement(it, incumbent.x, incumbent.y, incumbent.o, board, boardIsEmpty, w[0], w[1], w[2], cur[0], cur[1], cur[2], p, zeroOk);
@@ -818,15 +820,18 @@ export const runOptimizationEngine = async (
         return changed;
     };
 
-    /* Learning Algorithm Overclocks only grow while they sit in a machine, so any left unused go into free space in what gets reported
-     * Machines with Efficiency off first, none with an Efficiency target, a spot touching no Node preferred. Done on a copy, not in the search
+    /* Give unused, unfinished Learning modules a safe place to train in the reported layout.
+     * Never displace another module. The full current/projected board calculation protects the
+     * caller's original targets (including node effects) and never lowers an original Auto
+     * objective. A learner that has no harmless free spot stays in storage for the UI to report.
+     * This pass works on copies, leaving the actual optimization to the search.
      */
     const learningAlgorithms = searchPoolInventory
-        .filter(item => item.displayName.includes('Overclock') && item.effects.includes('Learning Algorithm') && !item.isLocked && !item.id.includes('_clone_'))
+        .filter(item => learner[idx(item)] && !item.isLocked && !item.isStuck && !item.id.includes('_clone_'))
         .map(idx);
     const laOrder = machines.map((_, mIdx) => mIdx)
-        .filter(mIdx => callerParams[mIdx].target[2] === null || params[mIdx].ignored[2])
-        .sort((a, b) => Number(!params[a].ignored[2]) - Number(!params[b].ignored[2]));
+        .filter(mIdx => canTrainHere[mIdx])
+        .sort((a, b) => Number(!callerParams[a].ignored[2]) - Number(!callerParams[b].ignored[2]));
     const withSpareLearningAlgorithms = (boards: Board[]) => {
         if (learningAlgorithms.length === 0) return null;
         const g = ++itemGen;
@@ -842,26 +847,47 @@ export const runOptimizationEngine = async (
             let best = null as Spot | null;
             for (const mIdx of laOrder) {
                 const board = (out ?? boards)[mIdx];
-                for (let c = 0; c < CELLS; c++) {
+                const before = boardTotals(board, mIdx);
+                const p = callerParams[mIdx];
+                const trial = board.slice();
+                candidateSpots: for (let c = 0; c < CELLS; c++) {
                     const x = c % 7, y = (c - x) / 7;
                     for (const o of orientations) {
                         if (!fits(board, x, y, o)) continue;
                         let nodes = 0;
+                        let connected = false;
                         for (let i = 0; i < o.count; i++) {
                             const cx = x + o.xs[i], cy = y + o.ys[i];
+                            if (cx === 0 || cx === 6 || cy === 0 || cy === 4) connected = true;
                             for (let d = 0; d < 4; d++) {
                                 const nx = cx + NEIGHBOR_DX[d], ny = cy + NEIGHBOR_DY[d];
                                 if (nx < 0 || nx > 6 || ny < 0 || ny > 4) continue;
                                 const a = board[ny * 7 + nx];
-                                if (a >= 0 && core.white[a]) nodes++;
+                                if (a >= 0) {
+                                    connected = true;
+                                    if (core.white[a]) nodes++;
+                                }
                             }
                         }
+                        if (!connected) continue;
+                        put(trial, x, y, o, it);
+                        const after = boardTotals(trial, mIdx);
+                        put(trial, x, y, o, EMPTY);
+                        const harmless = [0, 1, 2].every(s => {
+                            if (p.ignored[s]) return true;
+                            const target = p.target[s];
+                            if (target !== null && statOf(p, after, s) < Math.min(target, statOf(p, before, s))) return false;
+                            return !p.maximize[s] || currentStatOf(p, after, s) >= currentStatOf(p, before, s);
+                        });
+                        if (!harmless) continue;
                         if (best === null || nodes < best.nodes) best = { mIdx, x, y, o, nodes };
+                        // Zero node contacts is the global minimum of this pass's
+                        // placement preference. The trial has already been restored.
+                        if (nodes === 0) break candidateSpots;
                     }
                 }
                 if (best !== null && (best as Spot).nodes === 0) break;
             }
-            // Assigned inside the loops, which TypeScript's narrowing does not follow
             const spot = best as Spot | null;
             if (spot === null) continue;
             if (out === null) out = boards.map(b => b.slice());
@@ -957,7 +983,9 @@ export const runOptimizationEngine = async (
         const inventoryForCode = fullInventory.filter(item => !item.id.includes('_clone_') || usedClones.has(item.id));
         return generateCodeFromState(machines[mIdx].tier, machines[mIdx].maximizeStats, callerMachines[mIdx].targetStats, inventoryForCode, objectBoard);
     };
-    let pendingUpdate = false;
+    // An already-optimal starting layout may never produce a new record, but its
+    // unused learners still deserve the same harmless-space pass on the first report.
+    let pendingUpdate = learningAlgorithms.length > 0;
     // For each machine, whose layout it reports: within each interchangeable group the layouts sorted best first (the group's
     // maximized value, Performance and Quality before Efficiency) go to the cards in order. A layout holding a machine's own
     // special module (fixed) stays where it is
@@ -981,12 +1009,15 @@ export const runOptimizationEngine = async (
         if (!pendingUpdate) return;
         pendingUpdate = false;
         const updates: EngineUpdates = new Map();
-        const spare = withSpareLearningAlgorithms(bestBoards);
-        const unordered = spare ? spare.boards : bestBoards;
-        const unorderedStats = spare ? unordered.map((b, mIdx) => spare.changed.has(mIdx) ? score(b, mIdx) : bestStats[mIdx]) : bestStats;
-        const from = orderGroups(unordered, unorderedStats);
-        const boards = from.map(j => unordered[j]);
-        const stats = from.map(j => unorderedStats[j]);
+        // Assign interchangeable record layouts first. A harmless training gain on an
+        // unmet-target board must not then move that board onto a card whose target
+        // had already been met merely because its Auto output became higher.
+        const from = orderGroups(bestBoards, bestStats);
+        const ordered = from.map(j => bestBoards[j]);
+        const orderedStats = from.map(j => bestStats[j]);
+        const spare = withSpareLearningAlgorithms(ordered);
+        const boards = spare ? spare.boards : ordered;
+        const stats = spare ? boards.map((b, mIdx) => spare.changed.has(mIdx) ? score(b, mIdx) : orderedStats[mIdx]) : orderedStats;
         for (let mIdx = 0; mIdx < machineCount; mIdx++) {
             const objectBoard = core.toObjectBoard(boards[mIdx]);
             // Totals and per-piece stats as the rest of the app computes them
@@ -1001,7 +1032,9 @@ export const runOptimizationEngine = async (
             }
             // ownTotals: this machine's own layout, before the group ordering handed it another one; the coordinator gives things up by
             // these, since the search holds each machine to what its own layout reached
-            const own = unorderedStats[mIdx];
+            // Filler is report-only: the coordinator must ease using the totals the
+            // actual search layout holds, rather than a training-only addition.
+            const own = bestStats[mIdx];
             updates.set(machines[mIdx].id, { board: objectBoard, totals: full.totals, pieceStats: full.pieceStats, code, ownTotals: { Performance: own.p, Quality: own.q, Efficiency: own.e } });
         }
         onUpdate(updates, reportTiers((mIdx) => stats[mIdx], (mIdx) => boards[mIdx]));

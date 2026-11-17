@@ -10,6 +10,7 @@ import { OptimizationNotice } from './components/OptimizationNotice';
 import { useOptimizationProgress } from './hooks/useOptimizationProgress';
 import { projectDegradation } from './degradation';
 import type { ProgressMachine } from './optimizationProgress';
+import { canMachineTrainLearning, summariseLearning } from './learningStatus';
 import { inventoryRemovalReason, removeInventoryItem } from './inventoryRemoval';
 import { DegradationStatus } from './components/DegradationStatus';
 import { taskProtectionDays } from './machineDefaults';
@@ -424,7 +425,7 @@ const MachineInstance = React.memo(forwardRef(({
     }, [showPaths, optimizer.board]);
 
     const runSolo = () => optimizer.runOptimization(targetSteps(), isMirage(typeKey), waterMode(), worthlessBelowSteps(typeKey), sumsPE(typeKey),
-        undefined, cheapEnergyAt(typeKey), qualityCap(), degradationDays());
+        undefined, cheapEnergyAt(typeKey), qualityCap(), degradationDays(), canMachineTrainLearning(typeKey));
     useImperativeHandle(ref, () => ({
         run: optimizer.runOptimization,
         runSolo,
@@ -437,6 +438,7 @@ const MachineInstance = React.memo(forwardRef(({
             maximizeStats: optimizer.maximizeStats,
             targetStats: optimizer.targetStats,
             degradationDays: degradationDays(),
+            canTrainLearning: canMachineTrainLearning(typeKey),
             ignoreStats: optimizer.ignoreStats,
             statPriority: optimizer.statPriority,
             targetSteps: targetSteps(),
@@ -469,10 +471,12 @@ const MachineInstance = React.memo(forwardRef(({
         onSolvingChange(machineId, optimizer.isSolving);
     }, [optimizer.isSolving, machineId, onSolvingChange]);
 
-    // Lets the page refresh "Unused Module Storage" whenever this board changes
+    // Refresh the warehouse and the page-wide target/learning status when either
+    // a layout or this card's goals change, even while all optimizers are stopped.
     useEffect(() => {
         onBoardChange?.();
-    }, [optimizer.board, onBoardChange]);
+    }, [optimizer.board, optimizer.targetStats, optimizer.ignoreStats, optimizer.maximizeStats,
+        optimizer.statPriority, optimizer.tier, machineType, typeKey, degradationDaysOverride, jobPick, onBoardChange]);
 
     const getCellStyles = (x: number, y: number, cell: any): React.CSSProperties => {
         if (cell === 'Locked') {
@@ -873,7 +877,7 @@ const MachineInstance = React.memo(forwardRef(({
                         autoLabel={solverKind !== 'bloom' ? 'Max' : 'Auto'}
                         toggles={solverKind !== 'bloom'}
                         onJobChange={setJobPick}
-                        onContextChange={() => refreshGoalContext(value => value + 1)}
+                        onContextChange={() => { refreshGoalContext(value => value + 1); onBoardChange?.(); }}
                     />
                     <DegradationStatus
                         machineType={typeKey} board={optimizer.board} inventory={inventory}
@@ -1017,6 +1021,17 @@ export default function ModuleInventoryUI() {
 
     const machinesRef = useRef<Record<string, any>>({});
     const [solvingStates, setSolvingStates] = useState<Record<string, boolean>>({});
+    const [idleThreshold, setIdleThreshold] = useState(() => {
+        try {
+            const saved = Number(localStorage.getItem('optimizer_idle_seconds'));
+            return [10, 20, 30, 60, 90].includes(saved) ? saved : 60;
+        } catch { return 60; }
+    });
+    const changeIdleThreshold = (seconds: number) => {
+        if (![10, 20, 30, 60, 90].includes(seconds)) return;
+        setIdleThreshold(seconds);
+        try { localStorage.setItem('optimizer_idle_seconds', String(seconds)); } catch { /* applies this visit */ }
+    };
     const solveGeneration = useRef(0);
     const lastSolvingState = useRef<Record<string, boolean>>({});
     const progressRankByMachine = useRef<Record<string, number>>({});
@@ -1716,6 +1731,7 @@ export default function ModuleInventoryUI() {
                 tier: state.tier,
                 targetStats: state.targetStats,
                 degradationDays: state.degradationDays,
+                canTrainLearning: state.canTrainLearning,
                 maximizeStats: state.maximizeStats,
                 ignoreStats: state.ignoreStats,
                 // Card order is priority on this site's solver; the others keep each card's own stat priorities, as their sites do
@@ -2082,13 +2098,11 @@ export default function ModuleInventoryUI() {
         });
     }, []);
 
-    const optimizationProgress = useOptimizationProgress(() => {
-        const active = machines.filter(({ id }) => solvingRef.current[id]);
-        if (active.length === 0 || active.some(({ id }) => !machinesRef.current[id]?.getBoard())) return null;
+    const readProgressSnapshot = useCallback(() => {
+        if (machines.some(({ id }) => !machinesRef.current[id]?.getBoard())) return null;
         const inventoryById = indexInventoryById(expandedInventory);
-        const states = active.map(({ id }) => machinesRef.current[id].getState());
-        const progressMachines: ProgressMachine[] = active.map(({ id }, i) => {
-            const state = states[i];
+        const targetMachines: ProgressMachine[] = machines.map(({ id }) => {
+            const state = machinesRef.current[id].getState();
             // Preserve the exact joint search's rank groups, including distinct
             // protection horizons. A changing Auto duration must not rebase them.
             const rank = progressRankByMachine.current[id] ?? 1;
@@ -2108,15 +2122,27 @@ export default function ModuleInventoryUI() {
             }
             return { id, config, current, future };
         });
-        const context = JSON.stringify([solveGeneration.current, solverKind, machines.map(m => m.id), progressMachines.map(({ id, config }) => {
+        const progressMachines = targetMachines.filter(({ id }) => solvingRef.current[id]);
+        const context = JSON.stringify([solveGeneration.current, solverKind, machines.map(m => m.id), targetMachines.map(({ id, config }) => {
             // Auto speed can change the derived job duration. Reset on the actual
             // user's choices, so improving Auto cannot continually restart warmup.
             const { degradationDays: _derivedDays, ...goals } = config;
             const read = (key: string) => { try { return localStorage.getItem(key); } catch { return null; } };
             return [goals, read(machineJobKey(id)), read(desequencerChipsetKey(id)), read(desequencerAutoDaysKey(id)), read(`optimizer_degradation_days_${id}`)];
         })]);
-        return { context, machines: progressMachines };
-    }, isAnySolving, String(solveGeneration.current));
+        return { context, machines: progressMachines, targetMachines };
+        // Boards and goals live inside card refs; their throttled notification
+        // changes boardVersion and refreshes the snapshot reader while stopped.
+    }, [machines, expandedInventory, solverKind, solvingStates, boardVersion]);
+    const optimizationProgress = useOptimizationProgress(readProgressSnapshot, isAnySolving, String(solveGeneration.current), idleThreshold);
+    const learningSummary = useMemo(() => {
+        if (machines.some(({ id }) => !machinesRef.current[id]?.getBoard())) return null;
+        return summariseLearning(inventory, machines.map(({ id }) => ({
+            id, name: machinesRef.current[id].getState().machineType,
+            canTrainLearning: machinesRef.current[id].getState().canTrainLearning,
+            board: machinesRef.current[id].getBoard(),
+        })));
+    }, [inventory, machines, boardVersion]);
 
     const cellSize = machines.length <= 2 ? 50 : (machines.length <= 4 ? 40 : 35);
 
@@ -2418,7 +2444,8 @@ export default function ModuleInventoryUI() {
             {/* Toolbar: stays pinned to the top of the window while the page scrolls */}
             <div style={{ position: 'sticky', top: 0, zIndex: 100, backgroundColor: '#111', width: '100%', marginBottom: '16px',
                 boxShadow: '0 6px 10px -6px rgba(0, 0, 0, 0.8)' }}>
-            <OptimizationNotice progress={optimizationProgress} />
+            <OptimizationNotice progress={optimizationProgress} idleThreshold={idleThreshold}
+                onIdleThresholdChange={changeIdleThreshold} learning={learningSummary} />
             <div className="toolbar" style={{
                 display: 'flex', gap: '15px', justifyContent: 'space-between', alignItems: 'center', padding: '8px 16px', width: '100%',
                 boxSizing: 'border-box', backgroundColor: '#111'
