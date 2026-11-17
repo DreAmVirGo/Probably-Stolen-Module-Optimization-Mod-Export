@@ -78,6 +78,38 @@ export const progressScore = (machines: readonly ProgressMachine[]): number[] =>
     return [...target, ...auto];
 };
 
+/** Only explicit targets contribute: Auto improvements never postpone a target stall notice. */
+export const progressTargetScore = (machines: readonly ProgressMachine[]): number[] => {
+    const ranks = [...new Set(machines.flatMap(({ config }) => STATS
+        .filter(stat => enabled(config, stat) && config.targetStats[stat] !== null)
+        .map(stat => rank(config, stat))))].sort((a, b) => a - b);
+    const score = ranks.map(() => 0);
+    const rankIndex = new Map(ranks.map((value, index) => [value, index]));
+    for (const machine of machines) {
+        for (const stat of STATS) {
+            const { config } = machine;
+            const goal = config.targetStats[stat];
+            if (!enabled(config, stat) || goal === null) continue;
+            const value = targetReading(machine, stat);
+            if (value < goal) score[rankIndex.get(rank(config, stat))!] -= goal - value + (config.targetSteps?.[stat] ? 50 : 0);
+        }
+    }
+    return score;
+};
+
+export const progressTargetSummary = (machines: readonly ProgressMachine[]) => {
+    let targetCount = 0, metTargetCount = 0;
+    for (const machine of machines) {
+        for (const stat of STATS) {
+            const goal = machine.config.targetStats[stat];
+            if (!enabled(machine.config, stat) || goal === null) continue;
+            targetCount++;
+            if (targetReading(machine, stat) >= goal) metTargetCount++;
+        }
+    }
+    return { targetCount, metTargetCount, targetsMet: targetCount > 0 && metTargetCount === targetCount };
+};
+
 /** Equality at a threshold is safe; ignored/folded targets do not count. */
 export const progressTargetsMet = (machines: readonly ProgressMachine[]): boolean => machines.every(machine =>
     STATS.every(stat => !enabled(machine.config, stat) || machine.config.targetStats[stat] === null
@@ -97,29 +129,48 @@ const compare = (score: readonly number[], reference: readonly number[]) => {
 export type ProgressClockOptions = { warmupMs?: number; idleMs?: number };
 
 /** A hint clock only: it neither controls nor stops a solver. Use a monotonic now. */
-export const createProgressClock = ({ warmupMs = 90_000, idleMs = 60_000 }: ProgressClockOptions = {}) => {
+export const createProgressClock = ({ warmupMs = 0, idleMs = 60_000 }: ProgressClockOptions = {}) => {
     let context: string | null = null;
     let best: number[] = [];
-    let startedAt = 0;
+    let observedAt = 0;
     let progressAt = 0;
-    const clear = () => { context = null; best = []; startedAt = 0; progressAt = 0; };
+    let sessionStartedAt: number | null = null;
+    let stoppedAt: number | null = null;
+    let quietMs = Number.isFinite(idleMs) ? Math.max(0, idleMs) : 60_000;
+    const clearObservation = () => { context = null; best = []; observedAt = 0; progressAt = 0; };
+    const clear = () => { clearObservation(); sessionStartedAt = null; stoppedAt = null; };
     return {
+        start: (now: number) => {
+            clear();
+            if (Number.isFinite(now)) sessionStartedAt = now;
+        },
         observe: (contextKey: string, score: readonly number[], now: number) => {
-            // No active numeric goals means there is no optimization to time.
-            if (!contextKey || score.length === 0) { clear(); return; }
+            // Losing readiness or all numeric goals invalidates the quiet window,
+            // but never erases elapsed time in an ongoing optimization session.
+            if (!contextKey || score.length === 0) { clearObservation(); return; }
             if (!Number.isFinite(now) || score.some(value => !Number.isFinite(value))) return;
-            if (context !== contextKey || best.length !== score.length || now < startedAt) {
+            if (sessionStartedAt === null || stoppedAt !== null) {
+                sessionStartedAt = now;
+                stoppedAt = null;
+            }
+            if (context !== contextKey || best.length !== score.length || now < observedAt) {
                 context = contextKey;
                 best = [...score];
-                startedAt = now;
+                observedAt = now;
                 progressAt = now;
             } else if (compare(score, best) > 0) {
                 best = [...score];
                 progressAt = now;
             }
         },
+        setIdleMs: (value: number) => { quietMs = Number.isFinite(value) ? Math.max(0, value) : 60_000; },
+        stop: (now: number) => {
+            if (sessionStartedAt !== null && stoppedAt === null && Number.isFinite(now)) stoppedAt = Math.max(sessionStartedAt, now);
+            clearObservation();
+        },
         clear,
-        isStable: (now: number) => context !== null && now - startedAt >= warmupMs && now - progressAt >= idleMs,
+        isStable: (now: number) => context !== null && now - observedAt >= warmupMs && now - progressAt >= quietMs,
         getIdleMs: (now: number) => context === null ? 0 : Math.max(0, now - progressAt),
+        getElapsedMs: (now: number) => sessionStartedAt === null ? 0 : Math.max(0, (stoppedAt ?? now) - sessionStartedAt),
     };
 };
