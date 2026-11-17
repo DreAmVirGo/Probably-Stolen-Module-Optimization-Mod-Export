@@ -4,6 +4,15 @@
  * The page's own wording uses the same vocabulary.
  */
 export const ZH: Record<string, string> = {
+    'Day {d}': '第 {d} 天',
+    'Day unknown': '天数未知',
+    'Reimport the save to read its day.': '重新导入存档即可读取天数。',
+    'Day recorded in the imported save.': '导入的存档记录的游戏天数。',
+    'Optimization is roughly stable': '优化结果已大致稳定',
+    'Search has stalled': '搜索暂时停滞',
+    'All explicit targets on running machines are met, including degradation protection.': '运行中机器的所有已设目标均已达标，包括退化保护。',
+    'Some explicit targets on running machines remain unmet. Review the highlighted targets before stopping.': '运行中机器仍有已设目标未达标，停止前请检查标出的目标。',
+    'No improvement in the evaluated goals for {s}s. You can continue optimizing or stop when satisfied.': '按当前目标衡量，已有{s}秒未见改善；可以继续搜索，也可以在满意时停止。',
     'Module actions': '模组操作',
     'Actions for {name}': '{name}的操作',
     'Delete from warehouse…': '从仓库删除…',
@@ -474,6 +483,8 @@ export const ZH: Record<string, string> = {
     'Module ID: {id}': '模组编号：{id}',
 
     // ---- footer
+    'Version': '版本',
+    'Built {time} (UTC)': '构建于 {time}（UTC）',
     'How many CPU cores the optimizer may use. Applies from the next run': '优化器可使用的CPU核心数。下次运行时生效',
     'CPU usage:': 'CPU占用：',
     'Low': '低',

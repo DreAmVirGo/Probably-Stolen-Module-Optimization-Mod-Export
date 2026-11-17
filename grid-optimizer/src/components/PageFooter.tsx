@@ -3,6 +3,7 @@ import { CPU_USAGE_KEY, readCpuUsage } from '../solver/parallel';
 import type { CpuUsage } from '../solver/parallel';
 import { t, useLang } from '../i18n';
 import { isSolverLocked, readSolver, SOLVERS, subscribeSolver, writeSolver } from '../solvers';
+import { BuildVersion } from './BuildVersion';
 
 // The faint line at the very bottom of the page: which solver runs, how many cores a solve may use, and where the mod and this site live
 // label and hint are English, shown through t()
@@ -65,6 +66,7 @@ export const PageFooter = () => {
                 {' · '}
                 <a href="https://grid-optimizer.razboy20.workers.dev/" target="_blank" rel="noopener noreferrer" style={{ ...link, textDecoration: 'underline' }}>Razboy20</a>
             </span>
+            <BuildVersion />
         </footer>
     );
 };

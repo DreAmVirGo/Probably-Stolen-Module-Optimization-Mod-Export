@@ -1,8 +1,38 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { getSaveItemName, readSaveInventory } from '../src/saveImport.ts';
+import { getSaveItemName, readSaveDay, readSaveInventory } from '../src/saveImport.ts';
 
 const inventorySave = items => JSON.stringify({ mainInvJSON: JSON.stringify({ saveItems: items }) });
+
+test('reads the displayed station day without adding an offset', () => {
+    for (const day of [0, 1, 27, 365]) {
+        assert.equal(readSaveDay(JSON.stringify({ storeStation: { value: { dayCounter: day } } })), day);
+    }
+});
+
+test('reads station day even when ES3 dictionaries prevent whole-file JSON parsing', () => {
+    const text = '{"playerStore":{"value":{"dictionary":{1:"one",2:"two"}}},"storeStation":{"__type":"StoreStation, Assembly-CSharp","value":{"dayCounter":42,"data":{3:4}}}}';
+    assert.throws(() => JSON.parse(text));
+    assert.equal(readSaveDay(text), 42);
+});
+
+test('ignores inventory strings, nested counters and previews from other slots', () => {
+    const text = JSON.stringify({
+        mainInvJSON: JSON.stringify({ storeStation: { value: { dayCounter: 999 } }, saveItems: [] }),
+        previews: [{ storeStation: { value: { dayCounter: 888 } } }],
+        storeStation: { nested: { value: { dayCounter: 777 } }, value: { nested: { dayCounter: 666 }, dayCounter: 27 } },
+    });
+    assert.equal(readSaveDay(text), 27);
+});
+
+test('missing or invalid day counters remain unknown rather than guessing', () => {
+    for (const day of [-1, 1.5, '27', null, Number.MAX_SAFE_INTEGER + 1]) {
+        assert.equal(readSaveDay(JSON.stringify({ storeStation: { value: { dayCounter: day } } })), null);
+    }
+    for (const text of ['', '{}', '{"dayCounter":27}', '{"storeStation":{"dayCounter":27}}', '{"storeStation":{"value":{"dayCounter":27']) {
+        assert.equal(readSaveDay(text), null);
+    }
+});
 
 test('reads standard nested inventory JSON without changing names or escapes', () => {
     const items = [{ name: '“泥炭”合成肉', note: 'C:\\games\\“quoted”\n"text"', uniqueId: 42 }];

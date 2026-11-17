@@ -33,6 +33,54 @@ export function readSaveInventory<T>(text: string, key: string): T[] | null {
     return inventory.saveItems;
 }
 
+// Locate a direct property without parsing the whole ES3 document: Unity can
+// write dictionaries with unquoted numeric keys, while inventories are escaped
+// JSON strings. Skip quoted strings and nested objects to keep those separate.
+const propertyValueStart = (text: string, start: number, key: string): number | null => {
+    if (text[start] !== '{') return null;
+    let depth = 0;
+    for (let i = start; i < text.length; i++) {
+        const char = text[i];
+        if (char === '"') {
+            let end = i + 1;
+            for (; end < text.length; end++) {
+                if (text[end] === '\\') end++;
+                else if (text[end] === '"') break;
+            }
+            if (end >= text.length) return null;
+            if (depth === 1 && text.slice(i, end + 1) === `"${key}"`) {
+                let value = end + 1;
+                while (/\s/.test(text[value] ?? '') && value < text.length) value++;
+                if (text[value] === ':') {
+                    value++;
+                    while (/\s/.test(text[value] ?? '') && value < text.length) value++;
+                    return value;
+                }
+            }
+            i = end;
+        } else if (char === '{' || char === '[') depth++;
+        else if (char === '}' || char === ']') {
+            if (--depth === 0) return null;
+        }
+    }
+    return null;
+};
+
+// The game's displayed day is storeStation.value.dayCounter, with no +1.
+// Read the actual counter rather than a backup filename or another slot's preview.
+export function readSaveDay(text: string): number | null {
+    let start = text.search(/\S/);
+    for (const key of ['storeStation', 'value', 'dayCounter']) {
+        const next = propertyValueStart(text, start, key);
+        if (next === null) return null;
+        start = next;
+    }
+    const match = /^(0|[1-9]\d*)(?=\s*[,}])/.exec(text.slice(start));
+    if (!match) return null;
+    const day = Number(match[1]);
+    return Number.isSafeInteger(day) ? day : null;
+}
+
 // Stable identifiers observed in game saves. Names and custom names remain
 // untouched when building machine paths for the in-game import mod. These
 // canonical names are only for the optimizer's existing type/stat rules.

@@ -1,10 +1,10 @@
 import React, { useRef, useState } from 'react';
-import { SAVE_NAME_KEY, SAVE_SLOT_KEY } from '../modExport';
+import { SAVE_NAME_KEY, SAVE_SLOT_KEY, SAVE_DAY_KEY } from '../modExport';
 import { flushSaveSettings } from '../saveSettings';
 import { chipJobKey, dnaComplexity, seedJobKey, STORE_BASE_ATTRACTIVENESS_KEY } from '../machineDefaults';
 import { isSpecialModule } from '../hooks/useOptimizer';
 import { PRECOMPUTED_OFFSETS, getBaseStats } from '../utils';
-import { getSaveItemName, readSaveInventory } from '../saveImport';
+import { getSaveItemName, readSaveDay, readSaveInventory } from '../saveImport';
 import { isMachineModuleName } from '../constants';
 import { t, useLang } from '../i18n';
 import type {InventoryItem, ModuleShape, ItemEffect, ModuleColor, Point, GridTier} from '../types';
@@ -20,6 +20,11 @@ export default function SaveFileImporter({ onImport }: SaveFileImporterProps) {
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
     // Name of the last imported save (without .es3), kept across reloads like the rest of the page state
     const [saveName, setSaveName] = useState<string | null>(() => localStorage.getItem(SAVE_NAME_KEY));
+    const [saveDay, setSaveDay] = useState<number | null>(() => {
+        const saved = localStorage.getItem(SAVE_DAY_KEY);
+        const day = saved !== null && saved.trim() !== '' ? Number(saved) : NaN;
+        return Number.isSafeInteger(day) && day >= 0 ? day : null;
+    });
 
     const getShapeFromData = (width: number, data: number[], isHighTier: boolean, blocks: number): ModuleShape | null => {
         if (blocks <= 2) return 'Node1x2';
@@ -577,6 +582,10 @@ export default function SaveFileImporter({ onImport }: SaveFileImporterProps) {
                 const slot = slotText !== undefined && Number.isSafeInteger(Number(slotText)) ? Number(slotText) : null;
                 onImport(parsedInventory, newMachines, importedName, slot);
                 localStorage.setItem(SAVE_NAME_KEY, importedName);
+                const day = readSaveDay(text);
+                if (day === null) localStorage.removeItem(SAVE_DAY_KEY);
+                else localStorage.setItem(SAVE_DAY_KEY, String(day));
+                setSaveDay(day);
                 if (slot !== null) localStorage.setItem(SAVE_SLOT_KEY, String(slot));
                 else localStorage.removeItem(SAVE_SLOT_KEY);
                 setSaveName(importedName);
@@ -622,7 +631,12 @@ export default function SaveFileImporter({ onImport }: SaveFileImporterProps) {
                 </div>
             ) : saveName && (
                 <div style={{ position: 'absolute', right: '100%', top: '50%', transform: 'translateY(-50%)', marginRight: '10px', color: '#888', fontSize: '0.8em', whiteSpace: 'nowrap' }}>
-                    {saveName}
+                    <span>{saveName}</span>
+                    <span data-save-day={saveDay ?? 'unknown'}
+                        title={t(saveDay === null ? 'Reimport the save to read its day.' : 'Day recorded in the imported save.')}
+                        style={{ color: '#b5c7ae', marginLeft: '8px' }}>
+                        · {saveDay === null ? t('Day unknown') : t('Day {d}', { d: saveDay })}
+                    </span>
                 </div>
             )}
         </div>

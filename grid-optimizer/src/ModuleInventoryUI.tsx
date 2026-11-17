@@ -6,6 +6,10 @@ import { StatGoals } from './components/StatGoals';
 import { StatPercentages } from './components/StatPercentages';
 import { ModuleRemovalDialog } from './components/ModuleRemovalDialog';
 import { ModuleContextMenu } from './components/ModuleContextMenu';
+import { OptimizationNotice } from './components/OptimizationNotice';
+import { useOptimizationProgress } from './hooks/useOptimizationProgress';
+import { projectDegradation } from './degradation';
+import type { ProgressMachine } from './optimizationProgress';
 import { inventoryRemovalReason, removeInventoryItem } from './inventoryRemoval';
 import { DegradationStatus } from './components/DegradationStatus';
 import { taskProtectionDays } from './machineDefaults';
@@ -1013,6 +1017,9 @@ export default function ModuleInventoryUI() {
 
     const machinesRef = useRef<Record<string, any>>({});
     const [solvingStates, setSolvingStates] = useState<Record<string, boolean>>({});
+    const solveGeneration = useRef(0);
+    const lastSolvingState = useRef<Record<string, boolean>>({});
+    const progressRankByMachine = useRef<Record<string, number>>({});
 
     const getUsedItems = useCallback((excludeId?: string | null) => {
         const used = new Set<string>();
@@ -1700,6 +1707,7 @@ export default function ModuleInventoryUI() {
         states.forEach((state, i) => {
             priorities.push(i === 0 ? 1 : groupKey(state) === groupKey(states[i - 1]) ? priorities[i - 1] : priorities[i - 1] + 1);
         });
+        progressRankByMachine.current = Object.fromEntries(active.map((machine, i) => [machine.id, priorities[i]]));
         const configs = active.map((m, rank) => {
             const state = states[rank];
             const priority = priorities[rank];
@@ -2064,11 +2072,51 @@ export default function ModuleInventoryUI() {
     }, []);
 
     const handleSolvingChange = useCallback((id: string, solving: boolean) => {
+        // A stop/restart may be batched into one render with the same active ids.
+        // Keep an explicit run generation so a new search never inherits an old hint.
+        if (solving && !lastSolvingState.current[id]) solveGeneration.current++;
+        lastSolvingState.current[id] = solving;
         setSolvingStates(prev => {
             if (prev[id] === solving) return prev;
             return { ...prev, [id]: solving };
         });
     }, []);
+
+    const optimizationProgress = useOptimizationProgress(() => {
+        const active = machines.filter(({ id }) => solvingRef.current[id]);
+        if (active.length === 0 || active.some(({ id }) => !machinesRef.current[id]?.getBoard())) return null;
+        const inventoryById = indexInventoryById(expandedInventory);
+        const states = active.map(({ id }) => machinesRef.current[id].getState());
+        const progressMachines: ProgressMachine[] = active.map(({ id }, i) => {
+            const state = states[i];
+            // Preserve the exact joint search's rank groups, including distinct
+            // protection horizons. A changing Auto duration must not rebase them.
+            const rank = progressRankByMachine.current[id] ?? 1;
+            const config = { ...state, id, statPriority: solverKind === 'bloom'
+                ? { Performance: rank, Quality: rank, Efficiency: rank } : state.statPriority };
+            const board = machinesRef.current[id].getBoard();
+            const current = calculateBoardStats(board, expandedInventory, inventoryById).totals;
+            let future = current;
+            if (state.degradationDays > 0 && Object.entries(state.targetStats).some(([key, value]) => value !== null && !state.ignoreStats[key])) {
+                const pieces = new Map<string, InventoryItem>();
+                for (const cell of board.flat()) {
+                    if (cell && cell !== 'Locked' && !pieces.has(cell.id)) {
+                        pieces.set(cell.id, projectDegradation(inventoryById.get(cell.id) ?? cell, state.degradationDays));
+                    }
+                }
+                future = calculateBoardStats(board, [...pieces.values()], pieces).totals;
+            }
+            return { id, config, current, future };
+        });
+        const context = JSON.stringify([solveGeneration.current, solverKind, machines.map(m => m.id), progressMachines.map(({ id, config }) => {
+            // Auto speed can change the derived job duration. Reset on the actual
+            // user's choices, so improving Auto cannot continually restart warmup.
+            const { degradationDays: _derivedDays, ...goals } = config;
+            const read = (key: string) => { try { return localStorage.getItem(key); } catch { return null; } };
+            return [goals, read(machineJobKey(id)), read(desequencerChipsetKey(id)), read(desequencerAutoDaysKey(id)), read(`optimizer_degradation_days_${id}`)];
+        })]);
+        return { context, machines: progressMachines };
+    }, isAnySolving, String(solveGeneration.current));
 
     const cellSize = machines.length <= 2 ? 50 : (machines.length <= 4 ? 40 : 35);
 
@@ -2368,9 +2416,12 @@ export default function ModuleInventoryUI() {
             )}
 
             {/* Toolbar: stays pinned to the top of the window while the page scrolls */}
+            <div style={{ position: 'sticky', top: 0, zIndex: 100, backgroundColor: '#111', width: '100%', marginBottom: '16px',
+                boxShadow: '0 6px 10px -6px rgba(0, 0, 0, 0.8)' }}>
+            <OptimizationNotice progress={optimizationProgress} />
             <div className="toolbar" style={{
-                display: 'flex', gap: '15px', justifyContent: 'space-between', alignItems: 'center', padding: '8px 16px', marginBottom: '16px', width: '100%',
-                boxSizing: 'border-box', position: 'sticky', top: 0, zIndex: 100, backgroundColor: '#111', boxShadow: '0 6px 10px -6px rgba(0, 0, 0, 0.8)'
+                display: 'flex', gap: '15px', justifyContent: 'space-between', alignItems: 'center', padding: '8px 16px', width: '100%',
+                boxSizing: 'border-box', backgroundColor: '#111'
             }}>
                 <div className="store-stats-area" ref={statsAreaRef}>
                 <div className="store-stats">
@@ -2528,6 +2579,7 @@ export default function ModuleInventoryUI() {
                 </div>
                 </div>
                 </div>
+            </div>
             </div>
 
             {/* Razboy's or hoydoy's solver picked: theirs is a copy here, and their own site has the latest version */}
