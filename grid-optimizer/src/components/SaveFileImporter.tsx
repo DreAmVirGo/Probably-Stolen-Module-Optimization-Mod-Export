@@ -1,6 +1,8 @@
 import React, { useRef, useState } from 'react';
 import { SAVE_NAME_KEY, SAVE_SLOT_KEY, SAVE_DAY_KEY } from '../modExport';
 import { flushSaveSettings } from '../saveSettings';
+import { readRunningJob, writeImportedRunningJob } from '../runningJobs';
+import type { RunningJob } from '../runningJobs';
 import { chipJobKey, dnaComplexity, seedJobKey, STORE_BASE_ATTRACTIVENESS_KEY } from '../machineDefaults';
 import { isSpecialModule } from '../hooks/useOptimizer';
 import { PRECOMPUTED_OFFSETS, getBaseStats } from '../utils';
@@ -11,7 +13,7 @@ import type {InventoryItem, ModuleShape, ItemEffect, ModuleColor, Point, GridTie
 
 interface SaveFileImporterProps {
     // `save` is its filename; `slot` lets backups and renamed downloads share remembered settings.
-    onImport: (newItems: InventoryItem[], newMachines: { id: string, boardIds: (string | null)[][], machineType: string, kind?: string, uid?: number, tier: GridTier, job?: string }[], save: string, slot?: number | null) => void;
+    onImport: (newItems: InventoryItem[], newMachines: { id: string, boardIds: (string | null)[][], machineType: string, kind?: string, uid?: number, tier: GridTier, job?: string, runningJob?: RunningJob }[], save: string, slot?: number | null) => void;
 }
 
 export default function SaveFileImporter({ onImport }: SaveFileImporterProps) {
@@ -95,6 +97,7 @@ export default function SaveFileImporter({ onImport }: SaveFileImporterProps) {
         reader.onload = (evt) => {
             try {
                 const text = evt.target?.result as string;
+                const importedDay = readSaveDay(text);
 
                 // Each store inventory is its own JSON string in the save: { saveItems: [...] }, uuids numbered within it
                 const readInventory = (key: string) => readSaveInventory<any>(text, key);
@@ -124,7 +127,7 @@ export default function SaveFileImporter({ onImport }: SaveFileImporterProps) {
                 });
 
                 const parsedInventory: InventoryItem[] = [];
-                const newMachines: { id: string, boardIds: (string | null)[][], machineType: string, kind?: string, uid?: number, tier: GridTier, job?: string }[] = [];
+                const newMachines: { id: string, boardIds: (string | null)[][], machineType: string, kind?: string, uid?: number, tier: GridTier, job?: string, runningJob?: RunningJob }[] = [];
                 const machineContents = new Map<number, { invId: string, modifiedShape: any }[]>();
                 const machineDataMap = new Map<number, any>();
 
@@ -553,8 +556,10 @@ export default function SaveFileImporter({ onImport }: SaveFileImporterProps) {
 
                     // What the machine works on in the save: the seed in a Hydroponic System, the chip in a 3D Printer (machineJobs)
                     const job = parentItem ? savedJobOf(parentItem) : undefined;
+                    const runningJob = parentItem ? readRunningJob(getSaveItemName(parentItem), parentItem, importedDay, job) : null;
                     newMachines.push({
                         job,
+                        ...(runningJob ? { runningJob } : {}),
                         id: `m_${Math.random().toString(36).substring(2, 8)}`,
                         boardIds,
                         machineType: dropdownName,
@@ -581,9 +586,12 @@ export default function SaveFileImporter({ onImport }: SaveFileImporterProps) {
                 const slotFromName = /^save_(\d+)(?:_day\d+_\d{8}-\d{6})?$/i.exec(importedName)?.[1];
                 const slotText = slotFromName ?? /"saveSlotId"\s*:\s*(\d+)/.exec(text)?.[1];
                 const slot = slotText !== undefined && Number.isSafeInteger(Number(slotText)) ? Number(slotText) : null;
+                // Populate fresh derived locks before React mounts the new cards.
+                // An idle/completed/unknown job clears metadata instead of reviving an old lock.
+                newMachines.forEach(machine => writeImportedRunningJob(machine.id, machine.runningJob));
                 onImport(parsedInventory, newMachines, importedName, slot);
                 localStorage.setItem(SAVE_NAME_KEY, importedName);
-                const day = readSaveDay(text);
+                const day = importedDay;
                 if (day === null) localStorage.removeItem(SAVE_DAY_KEY);
                 else localStorage.setItem(SAVE_DAY_KEY, String(day));
                 setSaveDay(day);

@@ -14,6 +14,25 @@ const machine = (extra = {}, current = stats(), future) => ({
     },
 });
 
+test('task target status uses separate stat snapshots and honors a zero-use finishing boundary', () => {
+    const configured = machine({
+        degradationDays: 2,
+        degradationUses: { Performance: 2, Quality: 1, Efficiency: 0 },
+        targetStats: { Performance: 10, Quality: 10, Efficiency: 10 },
+        ignoreStats: { Performance: false, Quality: false, Efficiency: false },
+    }, stats(11, 11, 10), stats(-999, -999, -999));
+    configured.futureByStat = {
+        Performance: stats(10, 9, 8), Quality: stats(11, 10, 9), Efficiency: stats(11, 11, 9),
+    };
+    assert.deepEqual(progressTargetSummary([configured]), { targetCount: 3, metTargetCount: 3, targetsMet: true });
+    assert.deepEqual(progressTargetScore([configured]), [0]);
+    configured.futureByStat.Performance = stats(9, 9, 8);
+    assert.deepEqual(progressTargetSummary([configured]), { targetCount: 3, metTargetCount: 2, targetsMet: false });
+    assert.deepEqual(progressTargetScore([configured]), [-1]);
+    configured.current.Efficiency = 9;
+    assert.deepEqual(progressTargetSummary([configured]), { targetCount: 3, metTargetCount: 1, targetsMet: false });
+});
+
 test('default hint starts after sixty quiet seconds, without a hidden ninety-second warmup', () => {
     const clock = createProgressClock();
     clock.observe('run1', [0, 10], 0);

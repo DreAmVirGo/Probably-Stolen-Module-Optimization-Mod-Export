@@ -661,6 +661,8 @@ export type MachineConfig = {
     targetStats: TargetStats;
     // Future daily uses through which explicit targets must remain met (Auto is scored today).
     degradationDays?: number;
+    // Per-target projection indices for machines that use stats before/after a night's degradation.
+    degradationUses?: Partial<Stats>;
     // Some machines (Deal Maker) never trigger the game's module-use learning hook.
     canTrainLearning?: boolean;
     maximizeStats: any;
@@ -1150,7 +1152,7 @@ export function useOptimizer(
     }, [inventory, tier, maximizeStats, targetStats, ignoreStats, statPriority, machineId, getUsedItems, board, isSolving, isExternallySolving]);
 
     const runOptimization = async (targetSteps?: MachineConfig['targetSteps'], sumPQ?: boolean, water?: boolean,
-        worthlessBelowSteps?: MachineConfig['worthlessBelowSteps'], sumPE?: boolean, performanceCap?: number, cheapEnergyAt?: number, qualityCap?: number, degradationDays?: number, canTrainLearning?: boolean) => {
+        worthlessBelowSteps?: MachineConfig['worthlessBelowSteps'], sumPE?: boolean, performanceCap?: number, cheapEnergyAt?: number, qualityCap?: number, degradationDays?: number, canTrainLearning?: boolean, degradationUses?: Partial<Stats>) => {
         if (isSolving) {
             isSolvingRef.current = false;
             return;
@@ -1181,7 +1183,7 @@ export function useOptimizer(
         isSolvingRef.current = true;
 
         // The other solvers (solvers/index.ts) rank this card's stats by its own priorities, as their sites do
-        const config = { id: machineId, tier, targetStats, degradationDays, canTrainLearning, maximizeStats, ignoreStats, targetSteps, sumPQ, water, worthlessBelowSteps, sumPE, performanceCap, qualityCap, cheapEnergyAt, ...(readSolver() !== 'bloom' ? { statPriority } : {}) };
+        const config = { id: machineId, tier, targetStats, degradationDays, degradationUses, canTrainLearning, maximizeStats, ignoreStats, targetSteps, sumPQ, water, worthlessBelowSteps, sumPE, performanceCap, qualityCap, cheapEnergyAt, ...(readSolver() !== 'bloom' ? { statPriority } : {}) };
 
         /* hoydoy's solver (solvers/index.ts) runs one search per card at once, as on his site, each kept off only what the other cards held
          * when it started: two of them could both take the same free module, and the page then showed it on both. A layout using a module

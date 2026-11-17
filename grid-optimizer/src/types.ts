@@ -15,6 +15,9 @@ export interface InventoryItem {
     displayName: string;
     effects: [ItemEffect, ItemEffect];
     effectValues: [number, number];
+    // Authoritative current own stats after internal effects, before neighbours
+    // and positional bonuses. Used for manually corrected in-game snapshots.
+    currentStats?: Stats;
     isInfinite?: boolean;
     isLocked?: boolean;
     // Stuck in its machine (the game's MODULE_STUCK_TAG: only a Module Extractor takes it out). It never moves: no solver, drag or Store
