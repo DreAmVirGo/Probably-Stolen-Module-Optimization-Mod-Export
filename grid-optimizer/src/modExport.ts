@@ -27,6 +27,7 @@ import type { InventoryItem } from './types';
 
 export const MOD_EXPORT_PREFIX = 'PSMOD1:';
 export const SAVE_NAME_KEY = 'optimizer_save_name';
+export const SAVE_DAY_KEY = 'optimizer_save_day';
 export const SAVE_SLOT_KEY = 'optimizer_save_slot';
 
 export interface ModExportModule {

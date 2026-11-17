@@ -4,6 +4,10 @@
  * The page's own wording uses the same vocabulary.
  */
 export const ZH: Record<string, string> = {
+    'Day {d}': '第 {d} 天',
+    'Day unknown': '天数未知',
+    'Reimport the save to read its day.': '重新导入存档即可读取天数。',
+    'Day recorded in the imported save.': '导入的存档记录的游戏天数。',
     'Optimization is roughly stable': '优化结果已大致稳定',
     'Search has stalled': '搜索暂时停滞',
     'All explicit targets on running machines are met, including degradation protection.': '运行中机器的所有已设目标均已达标，包括退化保护。',
