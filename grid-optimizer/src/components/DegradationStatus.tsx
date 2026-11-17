@@ -81,8 +81,9 @@ export const DegradationStatus = ({ machineType, board, inventory, targets, igno
         return unit ? `${unit.fromPercent(target)} ${unit.unit}` : `${target}%`;
     };
     return (
-        <div style={{ fontSize: '0.72em', color: '#aaa', display: 'flex', flexDirection: 'column', gap: '5px' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
+        <div data-degradation-status="true" style={{ width: '100%', minWidth: 0, overflowWrap: 'anywhere',
+            fontSize: '0.72em', lineHeight: 1.4, color: '#aaa', display: 'flex', flexDirection: 'column', gap: '5px' }}>
+            <label style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: '4px 6px', flexWrap: 'wrap' }}>
                 {t('Degradation protection')}
                 <input type="number" min={1} max={365} step={1} disabled={disabled}
                     aria-label={t('Protection days')}
@@ -96,11 +97,9 @@ export const DegradationStatus = ({ machineType, board, inventory, targets, igno
                         else if (Number.isInteger(Number(text)) && Number(text) >= 1 && Number(text) <= 365) setOverride(Number(text));
                     }}
                     onBlur={() => setDraft(null)}
-                    style={{ width: '90px', padding: '3px 5px', color: '#eee', background: '#111', border: `1px solid ${inputInvalid ? '#ff7070' : '#444'}`, borderRadius: '4px' }} />
+                    style={{ width: '70px', flex: '0 0 70px', boxSizing: 'border-box', padding: '3px 5px', color: '#eee', background: '#111', border: `1px solid ${inputInvalid ? '#ff7070' : '#444'}`, borderRadius: '4px' }} />
                 <span>{t('Protect targets for {d}d', { d: days })}</span>
             </label>
-            <span>{t('One degradation use per day; no future Learning gains counted. Auto stats may fall.')}</span>
-            {phaseAware && <span>{t('Each target is checked when this task uses that stat.')}</span>}
             {extendsTask && <span>{t('The selected protection window extends beyond this task.')}</span>}
             {solver !== 'bloom' && hasTargets && <span>{t('Target protection uses the Bloom solver.')}</span>}
             {hasTargets && (
@@ -112,18 +111,32 @@ export const DegradationStatus = ({ machineType, board, inventory, targets, igno
                 </div>
             )}
             {forecast.hasDegradation && risks.map(risk => (
-                <span key={risk.stat} style={{ color: risk.unsafe ? '#ff7070' : risk.warning ? '#e0a13a' : '#aaa' }}>
-                    {statName(machineType, risk.stat)}: {risk.first === 0 ? t('Already below target')
-                        : risk.first === null ? t('Stays within target after degradation')
-                        : t('Below target after {d}d', { d: risk.first })}
-                    {risk.first !== null && snapshotDay !== null && <> · {t('Day {d}', { d: snapshotDay + risk.first })}</>}
-                    {' · '}{threshold(risk.stat, risk.target)}
-                    {risk.warning && <> · {t('Check before the next use.')}</>}
-                    {risk.afterTask && !risk.warning && risk.first !== null && <> · {t('This task finishes before this drop.')}</>}
-                    {risk.unsafe && risk.actualTaskRisk?.safeAfterCompletion
-                        && <> · {t('This task can finish; the extra protection requirement is unmet.')}</>}
-                </span>
+                <div key={risk.stat} data-degradation-stat={risk.stat} style={{ minWidth: 0,
+                    display: 'flex', flexDirection: 'column', gap: '2px', padding: '2px 0',
+                    color: risk.unsafe ? '#ff7070' : risk.warning ? '#e0a13a' : '#aaa' }}>
+                    <div style={{ minWidth: 0, display: 'flex', flexWrap: 'wrap', gap: '2px 6px', alignItems: 'baseline' }}>
+                        <span style={{ fontWeight: 600 }}>{statName(machineType, risk.stat)}:</span>
+                        <span>{risk.first === 0 ? t('Already below target')
+                            : risk.first === null ? t('Stays within target after degradation')
+                            : t('Below target after {d}d', { d: risk.first })}</span>
+                        {risk.first !== null && snapshotDay !== null && <span>{t('Day {d}', { d: snapshotDay + risk.first })}</span>}
+                    </div>
+                    <div style={{ minWidth: 0, display: 'flex', flexWrap: 'wrap', gap: '2px 6px' }}>
+                        <span>{t('Threshold: {value}', { value: threshold(risk.stat, risk.target) })}</span>
+                        {risk.warning && <span>{t('Check before the next use.')}</span>}
+                        {risk.afterTask && !risk.warning && risk.first !== null && <span>{t('This task finishes before this drop.')}</span>}
+                        {risk.unsafe && risk.actualTaskRisk?.safeAfterCompletion
+                            && <span>{t('This task can finish; the extra protection requirement is unmet.')}</span>}
+                    </div>
+                </div>
             ))}
+            <details style={{ minWidth: 0 }}>
+                <summary style={{ width: 'fit-content', maxWidth: '100%', cursor: 'pointer' }}>{t('Forecast assumptions')}</summary>
+                <div style={{ minWidth: 0, marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                    <span>{t('One degradation use per day; no future Learning gains counted. Auto stats may fall.')}</span>
+                    {phaseAware && <span>{t('Each target is checked when this task uses that stat.')}</span>}
+                </div>
+            </details>
         </div>
     );
 };
