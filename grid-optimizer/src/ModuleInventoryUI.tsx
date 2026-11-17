@@ -609,7 +609,8 @@ const MachineInstance = React.memo(forwardRef(({
             style={{
                 position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center',
                 backgroundColor: '#111', border: '1px solid #333', borderRadius: '8px', padding: `${HEADER_TOP + HEADER_HEIGHT + 10}px 15px 15px 15px`,
-                width: 'max-content', boxSizing: 'border-box', cursor: isAnySolving ? 'default' : 'grab'
+                width: (7 * cellSize + 22) / 0.8 + 32, maxWidth: '100%', minWidth: 0,
+                overflowWrap: 'anywhere', boxSizing: 'border-box', cursor: isAnySolving ? 'default' : 'grab'
             }}>
 
             <div
@@ -1067,6 +1068,17 @@ export default function ModuleInventoryUI() {
     }, [machines]);
 
     const machinesRef = useRef<Record<string, any>>({});
+    const [machineScale, setMachineScale] = useState(() => {
+        try {
+            const saved = Number(localStorage.getItem('optimizer_machine_scale'));
+            return Number.isInteger(saved) && saved >= 50 && saved <= 125 ? saved : 100;
+        } catch { return 100; }
+    });
+    const machineScaleRef = useRef(machineScale / 100);
+    machineScaleRef.current = machineScale / 100;
+    useEffect(() => {
+        try { localStorage.setItem('optimizer_machine_scale', String(machineScale)); } catch { /* viewer preference */ }
+    }, [machineScale]);
     const [solvingStates, setSolvingStates] = useState<Record<string, boolean>>({});
     const [idleThreshold, setIdleThreshold] = useState(() => {
         try {
@@ -1115,6 +1127,7 @@ export default function ModuleInventoryUI() {
         initialMouseY: number;
         initialTarget?: any;
     } | null>(null);
+    const [ghostCellSize, setGhostCellSize] = useState(35);
 
     const dragHoverTargetRef = useRef<{ machineId: string | null, x: number, y: number } | null>(null);
     const setDragTargetRefChange = useCallback((target: any) => {
@@ -1144,6 +1157,13 @@ export default function ModuleInventoryUI() {
 
     useEffect(() => {
         const handleAppDragStart = (e: any) => {
+            // DOM pixels include the card zoom and any phone grid scaling.
+            // The ghost is outside the zoomed cards and uses viewport coordinates.
+            const selector = e.detail.sourceMachineId
+                ? `[data-machine-id="${CSS.escape(e.detail.sourceMachineId)}"] .grid-wrapper > div`
+                : '.grid-wrapper > div';
+            const cell = document.querySelector<HTMLElement>(selector);
+            setGhostCellSize(cell?.getBoundingClientRect().width || 35 * machineScaleRef.current);
             setDragState(e.detail);
             if (e.detail.initialTarget) {
                 dragHoverTargetRef.current = e.detail.initialTarget;
@@ -1937,7 +1957,9 @@ export default function ModuleInventoryUI() {
         const container = containerRef.current;
         if (!el || !container) return null;
         const c = container.getBoundingClientRect();
-        return { left: c.left + el.offsetLeft, top: c.top + el.offsetTop, width: el.offsetWidth, height: el.offsetHeight };
+        const scale = machineScaleRef.current;
+        return { left: c.left + el.offsetLeft * scale, top: c.top + el.offsetTop * scale,
+            width: el.offsetWidth * scale, height: el.offsetHeight * scale };
     };
 
     // Keeps the lifted card under the pointer, wherever its slot currently is
@@ -1947,7 +1969,8 @@ export default function ModuleInventoryUI() {
         const card = cardRefs.current[drag.id];
         const box = slotBox(drag.id);
         if (!card || !box) return;
-        card.style.transform = `translate(${drag.x - drag.grabX - box.left}px, ${drag.y - drag.grabY - box.top}px) scale(1.03)`;
+        const scale = machineScaleRef.current;
+        card.style.transform = `translate(${(drag.x - drag.grabX - box.left) / scale}px, ${(drag.y - drag.grabY - box.top) / scale}px) scale(1.03)`;
     };
 
     useLayoutEffect(() => {
@@ -2443,7 +2466,7 @@ export default function ModuleInventoryUI() {
                     flex-wrap: wrap;
                     justify-content: center;
                     align-items: flex-start;
-                    gap: 30px;
+                    gap: 16px;
                     width: 100%;
                 }
                 
@@ -2735,6 +2758,22 @@ export default function ModuleInventoryUI() {
             })()}
 
             {/* Main Grid & Controls */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', gap: '8px', marginBottom: '10px', fontSize: '0.8em', color: '#bbb' }}>
+                <label style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                    {t('Machine size')}
+                    <input type="range" min={50} max={125} step={1} value={machineScale}
+                        aria-label={t('Machine size')} aria-valuetext={`${machineScale}%`}
+                        disabled={Boolean(dragState) || sortingId !== null}
+                        onChange={event => { if (!dragRef.current && !sortRef.current) setMachineScale(Number(event.target.value)); }}
+                        style={{ width: '150px', accentColor: '#80c78b' }} />
+                </label>
+                <output style={{ minWidth: '38px', fontVariantNumeric: 'tabular-nums' }}>{machineScale}%</output>
+                <button type="button" disabled={Boolean(dragState) || sortingId !== null}
+                    onClick={() => { if (!dragRef.current && !sortRef.current) setMachineScale(100); }}
+                    style={{ padding: '4px 8px', border: '1px solid #444', borderRadius: '5px', color: '#bbb', background: '#222', cursor: 'pointer' }}>
+                    {t('Reset size')}
+                </button>
+            </div>
             {/* Card order is priority: a small left-to-right arrow over the machine cards */}
             {machines.length > 1 && (
                 <div
@@ -2749,13 +2788,14 @@ export default function ModuleInventoryUI() {
                     <span>{t('drag cards to reorder')}</span>
                 </div>
             )}
-            <div className="machines-container" ref={containerRef}>
+            <div className="machines-container" ref={containerRef} data-machine-scale={machineScale} style={{ zoom: machineScale / 100 }}>
                 {machines.map(m => (
                     <div
                         key={m.id}
                         ref={(el) => { slotRefs.current[m.id] = el; }}
                         style={{
                             position: 'relative',
+                            maxWidth: '100%', minWidth: 0,
                             borderRadius: '8px',
                             // The slot a lifted card will drop into
                             outline: sortingId === m.id ? '2px dashed rgba(76, 175, 80, 0.55)' : 'none',
@@ -2766,7 +2806,7 @@ export default function ModuleInventoryUI() {
                     >
                       <div
                         ref={(el) => { cardRefs.current[m.id] = el; }}
-                        style={{ position: 'relative', willChange: sortingId === m.id ? 'transform' : undefined }}
+                        style={{ position: 'relative', maxWidth: '100%', willChange: sortingId === m.id ? 'transform' : undefined }}
                       >
                         <MachineInstance
                             machineId={m.id}
@@ -2900,7 +2940,7 @@ export default function ModuleInventoryUI() {
                 error={editingError} onCancel={() => { setEditingId(null); setEditingError(null); }} onConfirm={confirmEdit} />
             <ModuleRemovalDialog key={removalId} item={removalItem} disabled={isAnySolving || Boolean(dragState)}
                 error={removalError} onCancel={() => { setRemovalId(null); setRemovalError(null); }} onConfirm={confirmRemoval} />
-            <DragGhost dragState={dragState} cellSize={cellSize} />
+            <DragGhost dragState={dragState} cellSize={ghostCellSize} />
         </div>
     );
 }

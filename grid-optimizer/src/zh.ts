@@ -4,6 +4,8 @@
  * The page's own wording uses the same vocabulary.
  */
 export const ZH: Record<string, string> = {
+    'Machine size': '机器大小',
+    'Reset size': '恢复 100%',
     'Task locked': '任务锁定',
     'Running task: automatically locked until a fresh save confirms completion.': '任务正在进行；重新导入存档、确认任务结束后自动解锁。',
     'Day {d}': '第 {d} 天',
@@ -71,6 +73,8 @@ export const ZH: Record<string, string> = {
     'Estimated completion: day {d}': '预计完成：第 {d} 天',
     'Reimport after the task finishes; the website does not monitor the live game.': '任务完成后请重新导入存档；网页不会实时监测游戏进度。',
     'Each target is checked when this task uses that stat.': '按任务实际使用各项属性的时点检查目标。',
+    'Forecast assumptions': '预测依据',
+    'Threshold: {value}': '阈值：{value}',
     'The selected protection window extends beyond this task.': '所选保护时长超过了当前任务的剩余时间。',
     'Protection not met: a target falls below its threshold within {d}d.': '保护要求未满足：{d}天内有目标将低于阈值。',
     'This task can finish; check modules before the next use.': '本次任务可以完成；下次使用前请检查模组。',
