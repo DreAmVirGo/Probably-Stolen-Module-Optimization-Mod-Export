@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, forwardRef, useImperativeHandle, useCallback, useMemo, useSyncExternalStore } from 'react';
-import { encodeModExport, boardModules, machineUidKey } from './modExport';
+import { encodeModExport, boardModules, machineUidKey, SAVE_DAY_KEY } from './modExport';
 import { rememberSaveSettings, restoreSaveSettings } from './saveSettings';
 import { ALARM_SURE_STOP, harvestIcon, machineJobKey, alarmStopChance, defaultIgnoreStats, statUnit, defaultMaximizeStats, defaultTargetStats, desequencerDayOptions, desequencerChipsetKey, desequencerAutoDaysKey, statBreakpoints, isDesequencer, isMirage, isMoistureFarm, isAgeWell, sumsPE, jobSteps, isEvaporator, EVAPORATOR_QUALITY_CAP, worthlessBelowSteps, desequencerSpeed, desequencerCutoffs, statHasNoEffect, hiddenStat, statEffect, cheapEnergyAt, moistureFarmOutput, WATER_GRADES, miragePoints, STORE_BASE_ATTRACTIVENESS_KEY } from './machineDefaults';
 import { StatGoals } from './components/StatGoals';
@@ -14,6 +14,10 @@ import { canMachineTrainLearning, summariseLearning } from './learningStatus';
 import { inventoryRemovalReason, removeInventoryItem } from './inventoryRemoval';
 import { DegradationStatus } from './components/DegradationStatus';
 import { taskProtectionDays } from './machineDefaults';
+import { readStoredRunningJob, runningJobKey } from './runningJobs';
+import type { RunningJob } from './runningJobs';
+import { deriveTaskSafety, statProtectionUsesForDays } from './taskSafety';
+import { RunningJobStatus } from './components/RunningJobStatus';
 import { readSolver, runSelectedSolver, setSolverLocked, SOLVER_SITES, subscribeSolver } from './solvers';
 import { StatPriorities } from './components/StatPriorities';
 import type { Stats, GridTier, InventoryItem, ModuleColor, Point } from './types';
@@ -215,9 +219,12 @@ const MachineInstance = React.memo(forwardRef(({
     const [iconHover, setIconHover] = useState<{ x: number; y: number } | null>(null);
 
     // Manage local lock state
-    const [isMachineLocked, setIsMachineLocked] = useState(() => {
+    const [isManuallyLocked, setIsManuallyLocked] = useState(() => {
         return localStorage.getItem(`optimizer_machine_locked_${machineId}`) === 'true';
     });
+    const [runningJob] = useState(() => readStoredRunningJob(machineId));
+    const autoLocked = runningJob !== null;
+    const isMachineLocked = isManuallyLocked || autoLocked;
 
     const currentSolving = optimizer.isSolving || isThisMachineSolving;
 
@@ -235,6 +242,7 @@ const MachineInstance = React.memo(forwardRef(({
     // A machine type picked for this card (the card's dropdown, or the "+" card's list): numbered after the cards of that type, with
     // that machine's default goals
     const chooseType = (selected: string) => {
+        if (autoLocked) return;
         const allKeys = Object.keys(localStorage).filter(k => k.startsWith('optimizer_machine_type_'));
         let max = 0;
 
@@ -264,9 +272,9 @@ const MachineInstance = React.memo(forwardRef(({
     const saveTier = (() => { try { return Number(localStorage.getItem(saveTierKey(machineId))); } catch { return NaN; } })();
     // A machine added by hand is always fully upgraded (the Evaporator's 4x4 bay aside); one saved at a lower tier moves up, modules kept
     useEffect(() => {
-        if (!isImportedMachine && (optimizer.tier === 1 || optimizer.tier === 2)) optimizer.upgradeTier();
+        if (!autoLocked && !isImportedMachine && (optimizer.tier === 1 || optimizer.tier === 2)) optimizer.upgradeTier();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isImportedMachine, optimizer.tier]);
+    }, [autoLocked, isImportedMachine, optimizer.tier]);
     // A card added from the "+" card's list comes with its type waiting (pendingTypeKey)
     useEffect(() => {
         let pending: string | null = null;
@@ -297,10 +305,37 @@ const MachineInstance = React.memo(forwardRef(({
     // Hydroponic System: what the picked plant harvests, by the modules on the board (harvestIcon), shown beside the machine's icon
     const [jobPick, setJobPick] = useState<string | null>(() => { try { return localStorage.getItem(machineJobKey(machineId)); } catch { return null; } });
     const [, refreshGoalContext] = useState(0);
-    const automaticDegradationDays = () => taskProtectionDays(typeKey, machineId,
+    const task = useMemo(() => {
+        if (!runningJob) return null;
+        const byId = indexInventoryById(inventory);
+        const pieces = new Map<string, InventoryItem>();
+        for (const cell of optimizer.board.flat()) if (cell && cell !== 'Locked') pieces.set(cell.id, byId.get(cell.id) ?? cell);
+        const cache = new Map<number, number>();
+        return deriveTaskSafety(runningJob, uses => {
+            if (!cache.has(uses)) {
+                const projected = [...pieces.values()].map(item => projectDegradation(item, uses));
+                cache.set(uses, calculateBoardStats(optimizer.board, projected, indexInventoryById(projected)).totals.Performance);
+            }
+            return cache.get(uses)!;
+        });
+    }, [runningJob, optimizer.board, inventory]);
+    const automaticDegradationDays = () => task ? task.remainingDays ?? 365 : taskProtectionDays(typeKey, machineId,
         !optimizer.ignoreStats.Performance && optimizer.targetStats.Performance !== null
             ? optimizer.targetStats.Performance : optimizer.bestTotals.Performance);
     const degradationDays = () => Math.max(automaticDegradationDays(), degradationDaysOverride ?? 1);
+    const degradationUses = (): Partial<Stats> | undefined => {
+        if (task && (task.remainingDays === null || (degradationDaysOverride ?? 0) <= task.remainingDays)) return task.statProtectionUses;
+        // Idle Auto speed can change while solving, so a shorter pre-use window
+        // is justified only when a hard speed minimum bounds the planned job.
+        // Active tasks have a fixed, auto-locked board and an exact forecast.
+        if (!task && (optimizer.ignoreStats.Performance || optimizer.targetStats.Performance === null)) return undefined;
+        const knownPlan = isDesequencer(typeKey) || Boolean(jobSteps(typeKey, machineId, 'Performance')?.some(step => step.days)) || degradationDaysOverride !== null;
+        return knownPlan ? statProtectionUsesForDays(typeKey, degradationDays()) ?? undefined : undefined;
+    };
+    const importedDay = (() => {
+        if (runningJob) return runningJob.importedDay;
+        try { const raw = localStorage.getItem(SAVE_DAY_KEY); const day = raw === null ? NaN : Number(raw); return Number.isSafeInteger(day) && day >= 0 ? day : null; } catch { return null; }
+    })();
     const harvest = typeKey.toLowerCase().includes('hydroponic') ? harvestIcon(jobPick, new Set(optimizer.board.flat()
         .filter((c: any) => c && c !== 'Locked').map((c: any) => c.displayName as string))) : null;
     // A Blast module shifts every Furnace breakpoint up by 100%
@@ -409,9 +444,9 @@ const MachineInstance = React.memo(forwardRef(({
     }, [machineType, machineId]);
 
     useEffect(() => {
-        localStorage.setItem(`optimizer_machine_locked_${machineId}`, String(isMachineLocked));
+        localStorage.setItem(`optimizer_machine_locked_${machineId}`, String(isManuallyLocked));
         rememberSaveSettings();
-    }, [isMachineLocked, machineId]);
+    }, [isManuallyLocked, machineId]);
 
     const uniqueModules = useMemo(() => {
         if (!showPaths) return [];
@@ -424,20 +459,24 @@ const MachineInstance = React.memo(forwardRef(({
         return Array.from(mods.values());
     }, [showPaths, optimizer.board]);
 
-    const runSolo = () => optimizer.runOptimization(targetSteps(), isMirage(typeKey), waterMode(), worthlessBelowSteps(typeKey), sumsPE(typeKey),
-        undefined, cheapEnergyAt(typeKey), qualityCap(), degradationDays(), canMachineTrainLearning(typeKey));
+    const runSolo = () => {
+        if (autoLocked) return;
+        return optimizer.runOptimization(targetSteps(), isMirage(typeKey), waterMode(), worthlessBelowSteps(typeKey), sumsPE(typeKey),
+            undefined, cheapEnergyAt(typeKey), qualityCap(), degradationDays(), canMachineTrainLearning(typeKey), degradationUses());
+    };
     useImperativeHandle(ref, () => ({
-        run: optimizer.runOptimization,
+        run: (...args: Parameters<typeof optimizer.runOptimization>) => { if (!autoLocked) return optimizer.runOptimization(...args); },
         runSolo,
         stop: optimizer.stopOptimization,
-        clear: optimizer.resetBoard,
-        place: optimizer.manuallyPlaceItem,
-        remove: optimizer.manuallyRemoveItem,
+        clear: () => { if (!autoLocked) optimizer.resetBoard(); },
+        place: (...args: Parameters<typeof optimizer.manuallyPlaceItem>) => { if (!autoLocked) optimizer.manuallyPlaceItem(...args); },
+        remove: (...args: Parameters<typeof optimizer.manuallyRemoveItem>) => { if (!autoLocked) optimizer.manuallyRemoveItem(...args); },
         getState: () => ({
             tier: optimizer.tier,
             maximizeStats: optimizer.maximizeStats,
             targetStats: optimizer.targetStats,
             degradationDays: degradationDays(),
+            degradationUses: degradationUses(),
             canTrainLearning: canMachineTrainLearning(typeKey),
             ignoreStats: optimizer.ignoreStats,
             statPriority: optimizer.statPriority,
@@ -452,12 +491,13 @@ const MachineInstance = React.memo(forwardRef(({
             machineType,
             machineKind: typeKey
         }),
-        isValidPlacement: placeable,
+        isValidPlacement: (...args: Parameters<typeof placeable>) => !autoLocked && placeable(...args),
         getBoard: () => optimizer.boardRef.current,
-        applyUpdate: optimizer.applyUpdate,
+        applyUpdate: (...args: Parameters<typeof optimizer.applyUpdate>) => { if (!autoLocked) optimizer.applyUpdate(...args); },
         isLocked: () => isMachineLocked,
+        isAutoLocked: () => autoLocked,
         getModExport: () => modExportEntry()
-    }), [optimizer, isMachineLocked, machineType, typeKey]);
+    }), [optimizer, isMachineLocked, machineType, typeKey, autoLocked, task]);
 
     useEffect(() => {
         if (dragState && dragState.sourceMachineId === machineId && dragState.initialTarget && localHover === null) {
@@ -560,6 +600,8 @@ const MachineInstance = React.memo(forwardRef(({
 
     return (
         <div
+            data-machine-id={machineId}
+            data-auto-locked={autoLocked ? 'true' : 'false'}
             // The whole card background drags the card; the grid and the controls keep their own behaviour
             onPointerDown={(e) => { if (!isAnySolving) onReorderStart(machineId, e); }}
             style={{
@@ -635,7 +677,7 @@ const MachineInstance = React.memo(forwardRef(({
                     <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '8px' }}>
                         {/* A machine the save has below tier 3: upgrade its bay here, one tier at a time, its modules staying put */}
                         {isImportedMachine && (optimizer.tier === 1 || optimizer.tier === 2) && (
-                            <button onClick={optimizer.upgradeTier} disabled={currentSolving}
+                            <button onClick={optimizer.upgradeTier} disabled={currentSolving || autoLocked}
                                 title={t('Upgrade the module bay in the optimizer (tier {a} to {b}): the new cells open and every module stays where it is. In the game the machine needs the same upgrade before the mod can import a layout that uses them', { a: optimizer.tier, b: optimizer.tier + 1 })}
                                 style={{ marginRight: 'auto', background: 'rgba(76, 175, 80, 0.12)', border: '1px solid #2e4a35', borderRadius: '6px', color: '#8fd19e',
                                     cursor: currentSolving ? 'not-allowed' : 'pointer', fontSize: '0.75em', padding: '4px 8px', fontWeight: 'bold' }}>
@@ -644,7 +686,7 @@ const MachineInstance = React.memo(forwardRef(({
                         )}
                         {/* Upgraded here past what the save has: Restore puts the save's tier back */}
                         {isImportedMachine && optimizer.tier === 3 && (saveTier === 1 || saveTier === 2) && (
-                            <button onClick={() => optimizer.restoreTier(saveTier as GridTier)} disabled={currentSolving}
+                            <button onClick={() => optimizer.restoreTier(saveTier as GridTier)} disabled={currentSolving || autoLocked}
                                 title={t('Back to the tier this machine has in your save (tier {n}): the cells it locks close again, and modules on them go back to storage', { n: saveTier })}
                                 style={{ marginRight: 'auto', background: 'rgba(255, 152, 0, 0.12)', border: '1px solid #5a4325', borderRadius: '6px', color: '#ffb74d',
                                     cursor: currentSolving ? 'not-allowed' : 'pointer', fontSize: '0.75em', padding: '4px 8px', fontWeight: 'bold' }}>
@@ -662,8 +704,9 @@ const MachineInstance = React.memo(forwardRef(({
                             {showPaths ? t('Hide Paths') : t('Show Paths')}
                         </button>
                         <button
-                            onClick={() => setIsMachineLocked(!isMachineLocked)}
-                            disabled={isAnySolving}
+                            onClick={() => { if (!autoLocked) setIsManuallyLocked(!isManuallyLocked); }}
+                            disabled={isAnySolving || autoLocked}
+                            title={autoLocked ? t('Running task: automatically locked until a fresh save confirms completion.') : undefined}
                             style={{
                                 background: isMachineLocked ? 'rgba(255, 77, 77, 0.1)' : 'transparent',
                                 border: `1px solid ${isMachineLocked ? '#ff4d4d' : '#555'}`,
@@ -672,7 +715,7 @@ const MachineInstance = React.memo(forwardRef(({
                                 padding: '4px 8px', fontWeight: 'bold'
                             }}
                         >
-                            {isMachineLocked ? t('Unlock') : t('Lock')}
+                            {autoLocked ? t('Task locked') : isManuallyLocked ? t('Unlock') : t('Lock')}
                         </button>
                     </div>
                     <div style={{ minWidth: 0, display: 'flex', justifyContent: 'flex-end' }}>
@@ -703,8 +746,8 @@ const MachineInstance = React.memo(forwardRef(({
                 </div>
             {canDelete && (
                     <button
-                        onClick={() => onDelete(machineId)}
-                        disabled={isAnySolving}
+                        onClick={() => { if (!autoLocked) onDelete(machineId); }}
+                        disabled={isAnySolving || autoLocked}
                         style={{
                             background: 'none', border: 'none', color: isAnySolving ? '#444' : '#666',
                             cursor: isAnySolving ? 'not-allowed' : 'pointer', fontSize: '1.2em', padding: '0 4px', alignSelf: 'flex-start', lineHeight: 1
@@ -757,12 +800,12 @@ const MachineInstance = React.memo(forwardRef(({
                                     onContextMenu={(e) => {
                                         if (!cell || cell === 'Locked') return;
                                         e.preventDefault();
-                                        if (isAnySolving || cell.isStuck) return;
+                                        if (isAnySolving || autoLocked || cell.isStuck) return;
                                         onToggleLock(cell.id);
                                     }}
                                     onMouseDown={(e) => {
                                         if (e.button !== 0) return;
-                                        if (isAnySolving || !cell || cell === 'Locked') return;
+                                        if (isAnySolving || autoLocked || !cell || cell === 'Locked') return;
                                         e.preventDefault();
                                         // Stuck in the machine: only a Module Extractor moves it in the game
                                         if (cell.isStuck) return;
@@ -819,7 +862,7 @@ const MachineInstance = React.memo(forwardRef(({
                                         height: `${cellSize}px`,
                                         ...getCellStyles(x, y, cell),
                                         opacity: isBeingDragged ? 0.3 : 1,
-                                        cursor: cell && cell !== 'Locked' ? (isAnySolving ? 'not-allowed' : 'grab') : 'default',
+                                        cursor: cell && cell !== 'Locked' ? (isAnySolving || autoLocked ? 'not-allowed' : 'grab') : 'default',
                                         boxSizing: 'border-box',
                                         position: 'relative'
                                     }}
@@ -860,6 +903,7 @@ const MachineInstance = React.memo(forwardRef(({
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%', boxSizing: 'border-box' }}>
 
+                    <RunningJobStatus job={runningJob} task={task} autoLocked={autoLocked} />
                     <StatPercentages totals={optimizer.bestTotals} width={(7 * cellSize + 22) / 0.8} />
                     <StatGoals
                         machineType={typeKey}
@@ -885,6 +929,7 @@ const MachineInstance = React.memo(forwardRef(({
                         days={degradationDays()} automaticDays={automaticDegradationDays()}
                         override={degradationDaysOverride} setOverride={setDegradationDaysOverride}
                         disabled={currentSolving} solver={solverKind}
+                        statProtectionUses={degradationUses()} task={task} importedDay={importedDay}
                     />
                     {solverKind !== 'bloom' && (
                         <StatPriorities
@@ -908,20 +953,20 @@ const MachineInstance = React.memo(forwardRef(({
                                     runSolo();
                                 }
                             }}
-                            disabled={inventory.length === 0 && !currentSolving}
+                            disabled={autoLocked || (inventory.length === 0 && !currentSolving)}
                             style={{
                                 flex: 1, padding: '8px', fontSize: '0.85em',
                                 backgroundColor: currentSolving ? '#ff4d4d' : '#4caf50',
                                 color: 'white', border: `1px solid ${currentSolving ? '#ff4d4d' : '#4caf50'}`, borderRadius: '6px', fontWeight: 'bold',
-                                cursor: (inventory.length === 0 && !currentSolving) ? 'not-allowed' : 'pointer',
-                                opacity: (inventory.length === 0 && !currentSolving) ? 0.5 : 1
+                                cursor: (autoLocked || (inventory.length === 0 && !currentSolving)) ? 'not-allowed' : 'pointer',
+                                opacity: (autoLocked || (inventory.length === 0 && !currentSolving)) ? 0.5 : 1
                             }}
                         >
                             {currentSolving ? t('Stop') : t('Run')}
                         </button>
                         <button
-                            onClick={optimizer.resetBoard}
-                            disabled={isAnySolving}
+                            onClick={() => { if (!autoLocked) optimizer.resetBoard(); }}
+                            disabled={isAnySolving || autoLocked}
                             style={{ flex: 1, padding: '8px', fontSize: '0.85em', backgroundColor: '#333', color: 'white', border: '1px solid #555', borderRadius: '6px', cursor: isAnySolving ? 'not-allowed' : 'pointer' }}
                         >
                             {t('Clear')}
@@ -1116,6 +1161,14 @@ export default function ModuleInventoryUI() {
             const currentTarget = dragHoverTargetRef.current;
 
             if (currentDrag) {
+                const sourceLocked = currentDrag.sourceMachineId !== null && machinesRef.current[currentDrag.sourceMachineId]?.isAutoLocked();
+                const targetLocked = currentTarget?.machineId && machinesRef.current[currentTarget.machineId]?.isAutoLocked();
+                if (sourceLocked || targetLocked) {
+                    setDragState(null);
+                    dragRef.current = null;
+                    dragHoverTargetRef.current = null;
+                    return;
+                }
                 if (!currentTarget || currentTarget.machineId === null) {
                     if (currentDrag.sourceMachineId !== null && !lockedToMachine(currentDrag.item)) {
                         machinesRef.current[currentDrag.sourceMachineId]?.remove(currentDrag.item.id);
@@ -1614,10 +1667,17 @@ export default function ModuleInventoryUI() {
     };
     const handleRetrieve = () => {
         const byId = indexInventoryById(expandedInventory);
+        const preserved = new Set<string>();
+        const preservedLayouts: Record<string, { before: IdGrid; after: IdGrid }> = {};
         const same = (a: IdGrid, b: IdGrid) => a.length === b.length && a.every((row, y) => row.every((c, x) => c === b[y][x]));
         for (const [id, card] of Object.entries(machinesRef.current) as [string, any][]) {
             if (!card) continue;
             const layout = storedLayouts[id];
+            if (card.isAutoLocked()) {
+                for (const cell of card.getBoard().flat()) if (cell && cell !== 'Locked') preserved.add(cell.id);
+                if (layout) preservedLayouts[id] = layout;
+                continue;
+            }
             if (layout && same(idGrid(card.getBoard()), layout.after)) {
                 // Untouched since the Store: exactly the layout it had before
                 const board = layout.before.map(row => row.map(c => (c === 'Locked' ? 'Locked' : c ? byId.get(c) ?? null : null)));
@@ -1627,11 +1687,17 @@ export default function ModuleInventoryUI() {
                 for (const sid of liveStoredIds) card.remove(sid);
             }
         }
-        setStoredIds([]);
-        setStoredLayouts({});
+        setStoredIds(previous => previous.filter(id => preserved.has(id)));
+        setStoredLayouts(preservedLayouts);
         setStoreNote(null);
     };
-    const handleImportSave = useCallback((newItems: InventoryItem[], importedMachines: { id: string, boardIds: (string | null)[][], machineType: string, kind?: string, uid?: number, tier: GridTier, job?: string }[], save: string, saveSlot?: number | null) => {
+    const handleImportSave = useCallback((newItems: InventoryItem[], importedMachines: { id: string, boardIds: (string | null)[][], machineType: string, kind?: string, uid?: number, tier: GridTier, job?: string, runningJob?: RunningJob }[], save: string, saveSlot?: number | null) => {
+        jointRunRef.current.current = false;
+        Object.values(machinesRef.current).forEach(card => card?.stop());
+        setDragState(null);
+        dragRef.current = null;
+        dragHoverTargetRef.current = null;
+        setHoverInfo(null);
         setInventory(newItems);
         // A new save's modules were never stored
         setStoredIds([]);
@@ -1664,6 +1730,7 @@ export default function ModuleInventoryUI() {
                 localStorage.removeItem(`optimizer_machine_${m.id}`);
                 localStorage.removeItem(`optimizer_machine_type_${m.id}`);
                 localStorage.removeItem(`optimizer_machine_locked_${m.id}`); localStorage.removeItem(`optimizer_machine_kind_${m.id}`); localStorage.removeItem(machineUidKey(m.id)); localStorage.removeItem(saveTierKey(m.id));
+                localStorage.removeItem(runningJobKey(m.id));
             });
             return newMachines.length > 0
                 ? newMachines.map(m => ({ id: m.id }))
@@ -1716,7 +1783,7 @@ export default function ModuleInventoryUI() {
         const groupKey = (state: any) => JSON.stringify([
             String(state.machineKind).split(' > ').pop()!.replace(/\s+\d+$/, '').trim().toLowerCase(),
             state.ignoreStats, state.targetStats, state.maximizeStats, state.targetSteps,
-            state.degradationDays,
+            state.degradationDays, state.degradationUses,
         ]);
         const priorities: number[] = [];
         states.forEach((state, i) => {
@@ -1731,6 +1798,7 @@ export default function ModuleInventoryUI() {
                 tier: state.tier,
                 targetStats: state.targetStats,
                 degradationDays: state.degradationDays,
+                degradationUses: state.degradationUses,
                 canTrainLearning: state.canTrainLearning,
                 maximizeStats: state.maximizeStats,
                 ignoreStats: state.ignoreStats,
@@ -1787,6 +1855,7 @@ export default function ModuleInventoryUI() {
     const solvingRef = useRef(solvingStates);
     solvingRef.current = solvingStates;
     const handleRunMachine = async (id: string) => {
+        if (machinesRef.current[id]?.isAutoLocked()) return;
         // hoydoy: the card's own search starts next to the others, which carry on undisturbed
         if (readSolver() === 'hoydoy') { machinesRef.current[id]?.runSolo(); return; }
         const running = Object.entries(solvingRef.current).filter(([, on]) => on).map(([k]) => k);
@@ -2044,6 +2113,7 @@ export default function ModuleInventoryUI() {
                 localStorage.removeItem(`optimizer_machine_${m.id}`);
                 localStorage.removeItem(`optimizer_machine_type_${m.id}`);
                 localStorage.removeItem(`optimizer_machine_locked_${m.id}`); localStorage.removeItem(`optimizer_machine_kind_${m.id}`); localStorage.removeItem(machineUidKey(m.id)); localStorage.removeItem(saveTierKey(m.id));
+                localStorage.removeItem(runningJobKey(m.id));
             }
         });
 
@@ -2075,6 +2145,7 @@ export default function ModuleInventoryUI() {
     }, []);
 
     const handleDeleteMachine = useCallback((machineId: string) => {
+        if (machinesRef.current[machineId]?.isAutoLocked()) return;
         setMachines(prev => prev.filter(m => m.id !== machineId));
         delete machinesRef.current[machineId];
         setSolvingStates(prev => {
@@ -2085,6 +2156,7 @@ export default function ModuleInventoryUI() {
         localStorage.removeItem(`optimizer_machine_${machineId}`);
         localStorage.removeItem(`optimizer_machine_type_${machineId}`);
         localStorage.removeItem(`optimizer_machine_locked_${machineId}`); localStorage.removeItem(`optimizer_machine_kind_${machineId}`); localStorage.removeItem(machineUidKey(machineId)); localStorage.removeItem(saveTierKey(machineId));
+        localStorage.removeItem(runningJobKey(machineId));
     }, []);
 
     const handleSolvingChange = useCallback((id: string, solving: boolean) => {
@@ -2110,23 +2182,31 @@ export default function ModuleInventoryUI() {
                 ? { Performance: rank, Quality: rank, Efficiency: rank } : state.statPriority };
             const board = machinesRef.current[id].getBoard();
             const current = calculateBoardStats(board, expandedInventory, inventoryById).totals;
-            let future = current;
-            if (state.degradationDays > 0 && Object.entries(state.targetStats).some(([key, value]) => value !== null && !state.ignoreStats[key])) {
+            const projected = new Map<number, Stats>([[0, current]]);
+            const at = (uses: number): Stats => {
+                if (projected.has(uses)) return projected.get(uses)!;
                 const pieces = new Map<string, InventoryItem>();
                 for (const cell of board.flat()) {
                     if (cell && cell !== 'Locked' && !pieces.has(cell.id)) {
-                        pieces.set(cell.id, projectDegradation(inventoryById.get(cell.id) ?? cell, state.degradationDays));
+                        pieces.set(cell.id, projectDegradation(inventoryById.get(cell.id) ?? cell, uses));
                     }
                 }
-                future = calculateBoardStats(board, [...pieces.values()], pieces).totals;
-            }
-            return { id, config, current, future };
+                const totals = calculateBoardStats(board, [...pieces.values()], pieces).totals;
+                projected.set(uses, totals);
+                return totals;
+            };
+            const futureByStat = Object.fromEntries((['Performance', 'Quality', 'Efficiency'] as const)
+                .map(stat => [stat, state.targetStats[stat] === null || state.ignoreStats[stat] ? current
+                    : at(state.degradationUses?.[stat] ?? state.degradationDays ?? 0)]));
+            return { id, config, current, futureByStat };
         });
         const progressMachines = targetMachines.filter(({ id }) => solvingRef.current[id]);
         const context = JSON.stringify([solveGeneration.current, solverKind, machines.map(m => m.id), targetMachines.map(({ id, config }) => {
             // Auto speed can change the derived job duration. Reset on the actual
             // user's choices, so improving Auto cannot continually restart warmup.
-            const { degradationDays: _derivedDays, ...goals } = config;
+            const goals = { ...config };
+            delete goals.degradationDays;
+            delete goals.degradationUses;
             const read = (key: string) => { try { return localStorage.getItem(key); } catch { return null; } };
             return [goals, read(machineJobKey(id)), read(desequencerChipsetKey(id)), read(desequencerAutoDaysKey(id)), read(`optimizer_degradation_days_${id}`)];
         })]);

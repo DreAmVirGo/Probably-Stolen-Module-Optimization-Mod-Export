@@ -287,7 +287,7 @@ export const stallOrders = (machines: MachineConfig[], targets: (number | null)[
         } else if (target !== null && value < target) {
             // A protected user target is a hard threshold throughout the selected horizon.
             // Nor may a typed custom target be silently replaced by one of the preset steps.
-            if (((m.degradationDays ?? 0) > 0 && m.targetStats[key] !== null) || !steps.includes(target)) return;
+            if (((m.degradationUses !== undefined || (m.degradationDays ?? 0) > 0) && m.targetStats[key] !== null) || !steps.includes(target)) return;
             if (relax === null || rank > relax.rank || (rank === relax.rank && mIdx > relax.mIdx)) relax = { mIdx, s, rank };
         }
     }));
@@ -366,40 +366,44 @@ export const runOptimizationEngine = async (
     const core = createTypedCore(itemList, item => internalById.get(item.id)!);
     // Project effects before evaluating the whole board, so node, mount, receiver and
     // negative-feedback rounding is the same as today's totals. No Learning gains are assumed.
-    const projectedCores = new Map<number, ReturnType<typeof createTypedCore>>();
-    const endCore = machines.map(m => {
-        const days = Math.max(0, Math.floor(m.degradationDays ?? 0));
-        if (!days || !STAT_KEYS.some(k => m.targetStats[k] !== null && !statIsIgnored(m, k))) return core;
-        let projected = projectedCores.get(days);
+    const projectedCores = new Map<number, ReturnType<typeof createTypedCore>>([[0, core]]);
+    const endCores = machines.map((m, mIdx) => STAT_KEYS.map((key, s) => {
+        const uses = Math.max(0, Math.floor(m.degradationUses?.[key] ?? m.degradationDays ?? 0));
+        if (!uses || callerParams[mIdx].ignored[s] || m.targetStats[key] === null) return core;
+        let projected = projectedCores.get(uses);
         if (!projected) {
-            const items = itemList.map(item => projectDegradation(item, days));
-            projected = createTypedCore(items, applyInternalEffects);
-            projectedCores.set(days, projected);
+            projected = createTypedCore(itemList.map(item => projectDegradation(item, uses)), applyInternalEffects);
+            projectedCores.set(uses, projected);
         }
         return projected;
-    });
+    }));
     const boardTotals = (board: Board, mIdx: number): Totals => {
         const today = core.boardTotals(board);
-        if (endCore[mIdx] === core) return today;
-        const last = endCore[mIdx].boardTotals(board);
+        if (endCores[mIdx].every(projected => projected === core)) return today;
+        const evaluated = new Map<ReturnType<typeof createTypedCore>, Totals>([[core, today]]);
         const p = callerParams[mIdx];
-        return { ...today, protectedTargets: STAT_KEYS.map((_, s) => p.target[s] !== null && !p.ignored[s]
-            ? Math.min(currentStatOf(p, today, s), currentStatOf(p, last, s)) : null) };
+        return { ...today, protectedTargets: STAT_KEYS.map((_, s) => {
+            if (p.target[s] === null || p.ignored[s]) return null;
+            const projected = endCores[mIdx][s];
+            let last = evaluated.get(projected);
+            if (!last) { last = projected.boardTotals(board); evaluated.set(projected, last); }
+            return Math.min(currentStatOf(p, today, s), currentStatOf(p, last, s));
+        }) };
     };
-    // Greedy placement uses the end-of-horizon stats for dimensions that serve a target,
-    // while the acceptance score below keeps today's values for every Auto objective.
+    // Greedy placement uses each target's own snapshot. For a Desequencer's
+    // last use, Performance is post-use but Efficiency/Quality are pre-use.
+    // The acceptance score still evaluates every Auto objective today.
     const fillCores = machines.map((m, k) => {
-        if (endCore[k] === core) return core;
-        const targetP = !statIsIgnored(m, 'Performance') && m.targetStats.Performance !== null;
-        const targetQ = !statIsIgnored(m, 'Quality') && m.targetStats.Quality !== null;
-        const targetE = !statIsIgnored(m, 'Efficiency') && m.targetStats.Efficiency !== null;
+        if (endCores[k].every(projected => projected === core)) return core;
+        const targetP = !callerParams[k].ignored[0] && m.targetStats.Performance !== null;
+        const targetQ = !callerParams[k].ignored[1] && m.targetStats.Quality !== null;
+        const targetE = !callerParams[k].ignored[2] && m.targetStats.Efficiency !== null;
         return createTypedCore(itemList, item => {
-            const now = internalById.get(item.id)!;
-            const later = applyInternalEffects(projectDegradation(item, m.degradationDays!));
+            const it = core.indexOf.get(item.id)!;
             return {
-                Performance: targetP || (m.sumPE && targetE) ? later.Performance : now.Performance,
-                Quality: targetQ || (m.sumPQ && targetP) ? later.Quality : now.Quality,
-                Efficiency: targetE ? later.Efficiency : now.Efficiency,
+                Performance: targetE && m.sumPE ? endCores[k][2].IP[it] : targetP ? endCores[k][0].IP[it] : core.IP[it],
+                Quality: targetP && m.sumPQ ? endCores[k][0].IQ[it] : targetQ ? endCores[k][1].IQ[it] : core.IQ[it],
+                Efficiency: targetE ? endCores[k][2].IE[it] : core.IE[it],
             };
         });
     });
@@ -466,7 +470,7 @@ export const runOptimizationEngine = async (
      */
     const groupOf = (() => {
         const keys = machines.map((m, mIdx) => JSON.stringify([tierOfStat[mIdx], params[mIdx], stepsOf[mIdx], lockedMask(initialBoards[mIdx]),
-            m.performanceCap ?? null, m.worthlessBelowSteps ?? null, m.degradationDays ?? 0, m.canTrainLearning !== false]));
+            m.performanceCap ?? null, m.worthlessBelowSteps ?? null, m.degradationDays ?? 0, m.degradationUses ?? null, m.canTrainLearning !== false]));
         const groups: number[][] = [];
         keys.forEach((k, mIdx) => {
             const g = groups.find(gr => keys[gr[0]] === k);
@@ -907,7 +911,7 @@ export const runOptimizationEngine = async (
      */
     const lateTargets: [number, number][] = [];
     if (machineCount > 1 && (relaxOrders || STALL)) {
-        params.forEach((p, mIdx) => { if (p.water && p.target[1] !== null && !(machines[mIdx].degradationDays! > 0)) { lateTargets.push([mIdx, p.target[1]]); p.target[1] = null; } });
+        params.forEach((p, mIdx) => { if (p.water && p.target[1] !== null && !(machines[mIdx].degradationUses !== undefined || machines[mIdx].degradationDays! > 0)) { lateTargets.push([mIdx, p.target[1]]); p.target[1] = null; } });
         if (lateTargets.length > 0) tbGen++;
     }
     // The boards it starts from are the record to beat and the first step to climb from: at -Infinity the first move always counted as an
@@ -960,7 +964,7 @@ export const runOptimizationEngine = async (
         }
     };
     const lowerTarget = (mIdx: number, s: number) => {
-        if ((machines[mIdx].degradationDays ?? 0) > 0 && callerParams[mIdx].target[s] !== null) return;
+        if ((machines[mIdx].degradationUses !== undefined || (machines[mIdx].degradationDays ?? 0) > 0) && callerParams[mIdx].target[s] !== null) return;
         const current = params[mIdx].target[s];
         const steps = stepsOf[mIdx][s];
         if (current === null || !steps) return;
@@ -1351,7 +1355,7 @@ export const runOptimizationEngine = async (
         let best = -Infinity;
         const sumPQ = s === 0 && params[k].sumPQ;
         const sumPE = s === 2 && params[k].sumPE;
-        const placementCore = callerParams[k].target[s] !== null ? endCore[k] : core;
+        const placementCore = callerParams[k].target[s] !== null ? endCores[k][s] : core;
         for (const it of reps) {
             if (it === skip) continue;
             const orientations = core.orientations[it];
@@ -1377,7 +1381,7 @@ export const runOptimizationEngine = async (
         for (let c = 0; c < CELLS; c++) if (board[c] >= 0) { empty = false; break; }
         const sumPQ = s === 0 && params[k].sumPQ;
         const sumPE = s === 2 && params[k].sumPE;
-        const placementCore = callerParams[k].target[s] !== null ? endCore[k] : core;
+        const placementCore = callerParams[k].target[s] !== null ? endCores[k][s] : core;
         for (const it of reps) {
             const orientations = core.orientations[it];
             if (!orientations) continue;

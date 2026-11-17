@@ -4,6 +4,8 @@
  * The page's own wording uses the same vocabulary.
  */
 export const ZH: Record<string, string> = {
+    'Task locked': '任务锁定',
+    'Running task: automatically locked until a fresh save confirms completion.': '任务正在进行；重新导入存档、确认任务结束后自动解锁。',
     'Day {d}': '第 {d} 天',
     'Day unknown': '天数未知',
     'Reimport the save to read its day.': '重新导入存档即可读取天数。',
@@ -51,6 +53,22 @@ export const ZH: Record<string, string> = {
     'Already below target': '当前已低于目标',
     'Stays within target after degradation': '退化耗尽后仍满足目标',
     'Below target after {d}d': '{d}天后低于目标',
+    'Task in progress · automatically locked': '任务进行中 · 已自动锁定',
+    'Task in progress': '任务进行中',
+    'Work: {current}/{required}': '任务进度：{current}/{required}',
+    'Estimated remaining: {d}d': '预计剩余：{d}天',
+    'Completion cannot be confirmed with the current modules.': '当前模组配置下无法确认任务能完成。',
+    'Snapshot: day {d}': '存档快照：第 {d} 天',
+    'Estimated completion: day {d}': '预计完成：第 {d} 天',
+    'Reimport after the task finishes; the website does not monitor the live game.': '任务完成后请重新导入存档；网页不会实时监测游戏进度。',
+    'Each target is checked when this task uses that stat.': '按任务实际使用各项属性的时点检查目标。',
+    'The selected protection window extends beyond this task.': '所选保护时长超过了当前任务的剩余时间。',
+    'Protection not met: a target falls below its threshold within {d}d.': '保护要求未满足：{d}天内有目标将低于阈值。',
+    'This task can finish; check modules before the next use.': '本次任务可以完成；下次使用前请检查模组。',
+    'Check before the next use.': '下次使用前请检查。',
+    'Targets meet the {d}d task protection requirement.': '目标满足{d}天的任务保护要求。',
+    'This task finishes before this drop.': '本次任务会在这次下降前完成。',
+    'This task can finish; the extra protection requirement is unmet.': '本次任务可以完成，但额外保护要求未满足。',
     // ---- page
     'Module Optimizer (Mod Export)': '模组优化器（模组导出）',
     'Language': '语言',

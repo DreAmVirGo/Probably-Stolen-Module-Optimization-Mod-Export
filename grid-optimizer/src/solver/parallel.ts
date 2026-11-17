@@ -102,7 +102,7 @@ const createDisplay = (machines: MachineConfig[], onUpdate: (updates: Updates, t
     let shown: { sig: string; tiers: number[] } | null = null;
     const signature = (updates: Updates) => machines.map(m => {
         const t = updates.get(m.id)?.totals;
-        return t ? `${t.Performance},${t.Quality},${t.Efficiency}${(m.degradationDays ?? 0) > 0 ? '|' + updates.get(m.id)!.board.flat().map((cell: any) => cell && cell !== 'Locked' ? cell.id : cell).join(',') : ''}` : '-';
+        return t ? `${t.Performance},${t.Quality},${t.Efficiency}${((m.degradationDays ?? 0) > 0 || m.degradationUses !== undefined) ? '|' + updates.get(m.id)!.board.flat().map((cell: any) => cell && cell !== 'Locked' ? cell.id : cell).join(',') : ''}` : '-';
     }).join('|');
     const show = () => {
         if (!pending) return;
@@ -163,7 +163,7 @@ export const runParallelEngine = async (
     let relaxGen = 0;
     // Every order so far, for a search that starts late (see migration)
     const sent: { order: StallOrder; gen: number }[] = [];
-    let lateTargets = giveUp && machines.some(m => m.water && (m.targetStats.Quality ?? null) !== null && !(m.degradationDays! > 0));
+    let lateTargets = giveUp && machines.some(m => m.water && (m.targetStats.Quality ?? null) !== null && !(m.degradationDays! > 0 || m.degradationUses !== undefined));
     // Benchmarks only: sees every new record (the display shows only some)
     const onRecord: ((updates: Updates, tiers: number[]) => void) | undefined = (globalThis as any).__onRecord;
     // Staging (engine.ts STAGED): each stall brings the next priority group in before anything is given up, in every search at once

@@ -7,6 +7,7 @@ export type ProgressMachine = {
     // Full board totals, including neighbours and placement effects.
     current: Stats;
     future?: Stats;
+    futureByStat?: Partial<Record<keyof Stats, Stats>>;
 };
 
 const STATS = ['Performance', 'Quality', 'Efficiency'] as const;
@@ -34,8 +35,9 @@ const reading = (config: MachineConfig, totals: Stats, stat: Stat) => {
 };
 const targetReading = (machine: ProgressMachine, stat: Stat) => {
     const today = reading(machine.config, machine.current, stat);
-    return (machine.config.degradationDays ?? 0) > 0 && machine.future
-        ? Math.min(today, reading(machine.config, machine.future, stat)) : today;
+    const future = machine.futureByStat?.[stat] ?? machine.future;
+    const uses = machine.config.degradationUses?.[stat] ?? machine.config.degradationDays ?? 0;
+    return uses > 0 && future ? Math.min(today, reading(machine.config, future, stat)) : today;
 };
 const autoWorth = (config: MachineConfig, value: number, stat: Stat) => {
     if (stat !== 'Efficiency') return value;
