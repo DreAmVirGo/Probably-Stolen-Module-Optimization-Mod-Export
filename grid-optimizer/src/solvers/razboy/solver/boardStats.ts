@@ -143,9 +143,9 @@ export const calculateBoardStats = (
                 }
             }
 
-            absorbP = nfCount * 0.25 * nfPerf;
-            absorbQ = nfCount * 0.25 * nfQual;
-            absorbE = nfCount * 0.25 * nfEff;
+            absorbP = nfCount * Math.trunc(nfPerf / 4);
+            absorbQ = nfCount * Math.trunc(nfQual / 4);
+            absorbE = nfCount * Math.trunc(nfEff / 4);
         }
 
         absorptionStats.set(item.id, {

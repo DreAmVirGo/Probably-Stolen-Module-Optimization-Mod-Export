@@ -439,8 +439,8 @@ export const ZH: Record<string, string> = {
     'Solver': '求解器',
     'Which solver lays the modules out (when a solve starts)': '由哪个求解器排布模组（开始求解时生效）',
     "This site's solver": '本站的求解器',
-    "Razboy's solver, unchanged (GPU when available)": 'Razboy的求解器，原样移植（可用时使用GPU）',
-    "hoydoy's original solver, unchanged": 'hoydoy的原版求解器，原样移植',
+    "Razboy's solver (GPU when available)": 'Razboy的求解器（可用时使用GPU）',
+    "hoydoy's original solver": 'hoydoy的原版求解器',
 
     // ---- priority strip
     'Run All gives the best modules to the first card, then the next, and so on. Drag a card by its header to change the order.': '“运行全部优化”会把最好的模组先分给第一张卡片，然后依次往后。拖动卡片顶部即可调整顺序。',

@@ -29,7 +29,7 @@ const slotOfItem = (count: number, item: number) => {
 
 // The same totals the report computes, on an index board and without allocating
 // Node bonuses are 20% of the neighbours' internal stats and Negative Feedback a quarter of the absorbed negatives per effect,
-// each rounded toward zero as one quantity, which is what the report's roundStat does on integer inputs
+// each rounded toward zero before adding it to the module's own stats
 export const boardTotals = (tables: PoolTables, board: IndexBoard, out: BoardTotals) => {
     let count = 0;
     for (let i = 0; i < BOARD_CELLS; i++) {
@@ -139,9 +139,9 @@ export const boardTotals = (tables: PoolTables, board: IndexBoard, out: BoardTot
                     if (tables.e[adj] < 0) nfE += tables.e[adj];
                 }
             }
-            p = Math.trunc((4 * p + nfCount * nfP) / 4);
-            q = Math.trunc((4 * q + nfCount * nfQ) / 4);
-            e = Math.trunc((4 * e + nfCount * nfE) / 4);
+            p += nfCount * Math.trunc(nfP / 4);
+            q += nfCount * Math.trunc(nfQ / 4);
+            e += nfCount * Math.trunc(nfE / 4);
         }
 
         totalP += p; totalQ += q; totalE += e;
