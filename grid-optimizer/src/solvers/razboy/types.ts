@@ -14,6 +14,9 @@ export interface InventoryItem {
     displayName: string;
     effects: [ItemEffect, ItemEffect];
     effectValues: [number, number];
+    // Authoritative current own stats after internal effects, before neighbours
+    // and positional bonuses. Used for manually corrected in-game snapshots.
+    currentStats?: Stats;
     isInfinite?: boolean;
     isLocked?: boolean;
     originalPath?: string;

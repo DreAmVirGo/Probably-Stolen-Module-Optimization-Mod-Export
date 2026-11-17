@@ -5,6 +5,8 @@ import { ALARM_SURE_STOP, harvestIcon, machineJobKey, alarmStopChance, defaultIg
 import { StatGoals } from './components/StatGoals';
 import { StatPercentages } from './components/StatPercentages';
 import { ModuleRemovalDialog } from './components/ModuleRemovalDialog';
+import { ModuleEditDialog } from './components/ModuleEditDialog';
+import { editInventoryItem } from './inventoryEditing';
 import { ModuleContextMenu } from './components/ModuleContextMenu';
 import { OptimizationNotice } from './components/OptimizationNotice';
 import { useOptimizationProgress } from './hooks/useOptimizationProgress';
@@ -1520,7 +1522,10 @@ export default function ModuleInventoryUI() {
     const [moduleMenu, setModuleMenu] = useState<{ id: string; x: number; y: number } | null>(null);
     const [removalId, setRemovalId] = useState<string | null>(null);
     const [removalError, setRemovalError] = useState<string | null>(null);
+    const [editingId, setEditingId] = useState<string | null>(null);
+    const [editingError, setEditingError] = useState<string | null>(null);
     const removalItem = inventory.find(item => item.id === removalId) ?? null;
+    const editingItem = inventory.find(item => item.id === editingId) ?? null;
     const menuItem = inventory.find(item => item.id === moduleMenu?.id) ?? null;
     const removalReason = (itemId: string) => inventoryRemovalReason({
         itemId, inventory, usedIds: getUsedItems(null),
@@ -1545,6 +1550,30 @@ export default function ModuleInventoryUI() {
         setRemovalId(itemId);
         setRemovalError(removalMessage(removalReason(itemId)));
     };
+    const editMessage = (reason: ReturnType<typeof inventoryRemovalReason>) => reason === 'stuck'
+        ? 'Stuck modules cannot be edited in the warehouse.' : removalMessage(reason);
+    const requestEdit = (itemId: string) => {
+        setModuleMenu(null);
+        setEditingId(itemId);
+        setEditingError(editMessage(removalReason(itemId)));
+    };
+    const confirmEdit = (itemId: string, stats: Stats) => {
+        const reason = removalReason(itemId);
+        if (reason !== null) { setEditingError(editMessage(reason)); return; }
+        const item = inventory.find(candidate => candidate.id === itemId);
+        if (!item) return;
+        try {
+            const updated = editInventoryItem(item, stats);
+            setInventory(previous => previous.map(candidate => candidate.id === itemId ? updated : candidate));
+        } catch {
+            setEditingError('Enter a whole number from -2048 to 2047 for every stat.');
+            return;
+        }
+        setEditingId(null);
+        setEditingError(null);
+        setHoverInfo(null);
+        setStoreNote(null);
+    };
     const confirmRemoval = (itemId: string) => {
         const reason = removalReason(itemId);
         if (reason !== null) { setRemovalError(removalMessage(reason)); return; }
@@ -1564,6 +1593,8 @@ export default function ModuleInventoryUI() {
         setModuleMenu(null);
         setRemovalId(null);
         setRemovalError(null);
+        setEditingId(null);
+        setEditingError(null);
     }, [isAnySolving, dragState]);
     const idGrid = (board: any[][]): IdGrid => board.map(row => row.map(c => (c === 'Locked' ? 'Locked' : c ? c.id : null)));
     const handleStore = () => {
@@ -1692,6 +1723,8 @@ export default function ModuleInventoryUI() {
         setStoreNote(null);
     };
     const handleImportSave = useCallback((newItems: InventoryItem[], importedMachines: { id: string, boardIds: (string | null)[][], machineType: string, kind?: string, uid?: number, tier: GridTier, job?: string, runningJob?: RunningJob }[], save: string, saveSlot?: number | null) => {
+        setEditingId(null);
+        setEditingError(null);
         jointRunRef.current.current = false;
         Object.values(machinesRef.current).forEach(card => card?.stop());
         setDragState(null);
@@ -2800,7 +2833,7 @@ export default function ModuleInventoryUI() {
                         </span>
                     </div>
                     {storeNote && <div style={{ color: '#888', fontSize: '0.8em', marginTop: '-8px', marginBottom: '10px' }}>{storeNote}</div>}
-                    <div style={{ color: '#888', fontSize: '0.75em', marginBottom: '10px' }}>{t('Right-click a warehouse module or use its menu to delete it.')}</div>
+                    <div style={{ color: '#888', fontSize: '0.75em', marginBottom: '10px' }}>{t('Right-click a warehouse module or use its menu to edit or delete it.')}</div>
 
                     {unusedModules.length === 0 ? (
                         <div style={{ color: '#777', fontSize: '0.85em', textAlign: 'center', padding: '30px 10px' }}>
@@ -2862,7 +2895,9 @@ export default function ModuleInventoryUI() {
             {moduleMenu && menuItem && <ModuleContextMenu item={menuItem} x={moduleMenu.x} y={moduleMenu.y}
                 disabled={removalReason(menuItem.id) !== null}
                 reason={removalMessage(removalReason(menuItem.id))}
-                onClose={() => setModuleMenu(null)} onDelete={() => requestRemoval(menuItem.id)} />}
+                onClose={() => setModuleMenu(null)} onEdit={() => requestEdit(menuItem.id)} onDelete={() => requestRemoval(menuItem.id)} />}
+            <ModuleEditDialog item={editingItem} disabled={isAnySolving || Boolean(dragState)}
+                error={editingError} onCancel={() => { setEditingId(null); setEditingError(null); }} onConfirm={confirmEdit} />
             <ModuleRemovalDialog key={removalId} item={removalItem} disabled={isAnySolving || Boolean(dragState)}
                 error={removalError} onCancel={() => { setRemovalId(null); setRemovalError(null); }} onConfirm={confirmRemoval} />
             <DragGhost dragState={dragState} cellSize={cellSize} />

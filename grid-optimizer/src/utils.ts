@@ -54,6 +54,9 @@ export const getBaseStats = (template: { shape: ModuleShape, color: ModuleColor,
 // effect in the other slot treats as its "base" (e.g. Premium before Learning Algorithm raises
 // the value Learning Algorithm starts/caps against).
 const computeItemStats = (item: InventoryItem): { effectiveBase: Stats, internal: Stats } => {
+    // A corrected snapshot already contains Premium, Degrading, Feedback, etc.
+    // Position and neighbour effects are still applied by the board evaluator.
+    if (item.currentStats) return { effectiveBase: { ...item.currentStats }, internal: { ...item.currentStats } };
     let { Performance: p, Quality: q, Efficiency: e } = getBaseStats(item);
     let effectiveBase: Stats = { Performance: p, Quality: q, Efficiency: e };
 

@@ -16,7 +16,7 @@ export const getModuleProgressMax = (
     if (!effects.some(progressing)) return 0;
     const initialEffect = (effect: ItemEffect = 'None'): ItemEffect => progressing(effect) ? 'Overcharged' : effect;
     const stats = applyInternalEffects({
-        ...template, id: 'progress_initialization',
+        shape: template.shape, color: template.color, displayName: template.displayName, id: 'progress_initialization',
         effects: [initialEffect(effects[0]), initialEffect(effects[1])], effectValues: [0, 0],
     });
     return Math.max(0, stats.Performance, stats.Quality, stats.Efficiency);

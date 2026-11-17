@@ -24,6 +24,16 @@ const boardWith = piece => {
 const maxStats = { Performance: true, Quality: false, Efficiency: false };
 const targets = { Performance: null, Quality: null, Efficiency: null };
 
+test('fresh progress caps ignore current stat corrections and saved base snapshots', () => {
+    const corrected = {
+        ...redL3, id: 'corrected', currentStats: { Performance: 67, Quality: 3, Efficiency: -22 },
+        baseStats: { Performance: 200, Quality: 0, Efficiency: 0 },
+        effects: ['Learning Algorithm', 'Receiver'], effectValues: [67, 0],
+    };
+    assert.equal(getModuleProgressMax(corrected, corrected.effects), 24);
+    assert.equal(getModuleProgressMax(corrected, ['Negative Feedback', 'Degrading']), 30);
+});
+
 test('fresh L3 caps include both initialized effects with game rounding in their original slots', () => {
     for (const [effects, expected] of [
         [['Negative Feedback', 'Degrading'], 30], [['Degrading', 'Negative Feedback'], 30],

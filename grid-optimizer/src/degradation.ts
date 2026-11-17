@@ -16,21 +16,38 @@ export const projectDegradation = (item: InventoryItem, uses: number): Inventory
     if (!Number.isFinite(uses) || uses <= 0 || !item.effects.includes('Degrading')) return item;
     const elapsed = Math.floor(uses);
     if (elapsed === 0) return item;
+    // The native per-use effect loop processes every Degrading occurrence. Each
+    // slot consumes one point from the shared current positive reading per use.
+    const count = item.effects.filter(effect => effect === 'Degrading').length;
+    const loss = elapsed * count;
     const effectValues = item.effectValues.map((value, slot) => item.effects[slot] === 'Degrading' && Number.isFinite(value)
-        ? Math.max(0, Math.trunc(value) - elapsed)
+        ? Math.max(0, Math.trunc(value) - loss)
         : value) as [number, number];
-    if (effectValues.every((value, slot) => value === item.effectValues[slot])) return item;
-    return { ...item, effectValues };
+    let currentStats = item.currentStats;
+    if (currentStats) {
+        const age = (value: number) => value > 0 ? Math.max(0, value - loss) : value;
+        currentStats = { Performance: age(currentStats.Performance), Quality: age(currentStats.Quality), Efficiency: age(currentStats.Efficiency) };
+    }
+    const statsChanged = currentStats && (['Performance', 'Quality', 'Efficiency'] as const).some(key => currentStats[key] !== item.currentStats![key]);
+    if (!statsChanged && effectValues.every((value, slot) => value === item.effectValues[slot])) return item;
+    return { ...item, effectValues, ...(currentStats ? { currentStats } : {}) };
 };
 
 /** Number of uses until every Degrading value in this inventory reaches zero. */
 export const degradationLifetime = (items: Iterable<InventoryItem>): number => {
     let last = 0;
     for (const item of items) {
-        item.effects.forEach((effect, slot) => {
-            const value = item.effectValues[slot];
-            if (effect === 'Degrading' && Number.isFinite(value)) last = Math.max(last, Math.trunc(value));
-        });
+        const count = item.effects.filter(effect => effect === 'Degrading').length;
+        if (count === 0) continue;
+        if (item.currentStats) {
+            const positive = Math.max(0, item.currentStats.Performance, item.currentStats.Quality, item.currentStats.Efficiency);
+            if (Number.isFinite(positive)) last = Math.max(last, Math.ceil(positive / count));
+        } else {
+            item.effects.forEach((effect, slot) => {
+                const value = item.effectValues[slot];
+                if (effect === 'Degrading' && Number.isFinite(value)) last = Math.max(last, Math.ceil(Math.max(0, Math.trunc(value)) / count));
+            });
+        }
     }
     return last;
 };
