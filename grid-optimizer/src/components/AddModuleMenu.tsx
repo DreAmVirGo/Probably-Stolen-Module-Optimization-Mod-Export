@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { InventoryItem, ItemEffect, ModuleColor, ModuleTemplate, Stats } from '../types';
 import { COLOR_MAP, MODULE_TEMPLATES, NODE_TEMPLATE } from '../constants';
 import { applyInternalEffects, getBaseStats } from '../utils';
+import { getModuleProgressMax } from '../moduleProgress';
 import MiniShape from './MiniShape';
 import { t, useLang, moduleName } from '../i18n';
 
@@ -28,12 +29,9 @@ const INCOMPATIBLE: Partial<Record<ItemEffect, ItemEffect[]>> = {
 };
 const canPair = (a: ItemEffect, b: ItemEffect) => a !== b && !(INCOMPATIBLE[a] ?? []).includes(b);
 
-// Degrading starts at twice the module's best stat and loses 1% a use; Learning Algorithm starts at 0 and gains 1% a use up to twice it
+// Progress values are the current in-game reading. Fresh maxima also include
+// the other initialized effect, in slot order (see getModuleProgressMax).
 const hasProgress = (e: ItemEffect) => e === 'Degrading' || e === 'Learning Algorithm';
-const maxValue = (template: ModuleTemplate) => {
-    const base = getBaseStats(template);
-    return Math.floor(Math.max(0, base.Performance, base.Quality, base.Efficiency) * 2);
-};
 
 /* The module types to build from, in the order players know them: the basic and high-tier module of each stat, the two Neural Cores
  * and the node. Each type has its shapes (MODULE_TEMPLATES); Neural Cores and nodes come without effects.
@@ -142,7 +140,7 @@ export default function AddModuleMenu({ onAdd, disabled }: { onAdd: (item: Inven
     // Phones: the menu is pinned to the screen and the list sits above the details
     const narrow = typeof window !== 'undefined' && window.innerWidth < 700;
     const template = type.shapes[Math.min(shapeIdx, type.shapes.length - 1)];
-    const max = maxValue(template);
+    const max = getModuleProgressMax(template, effects);
     const progressEffect = effects.find(hasProgress);
     // Learning starts empty and Degrading full, until the slider is moved
     const value = progressEffect ? Math.min(max, progress ?? (progressEffect === 'Degrading' ? max : 0)) : 0;
@@ -158,13 +156,15 @@ export default function AddModuleMenu({ onAdd, disabled }: { onAdd: (item: Inven
     }, [template, effects, value]);
     const stats = applyInternalEffects(item);
 
-    const pickType = (i: number) => { setTypeIdx(i); if (TYPES[i].machine) setSpecialsOpen(true); setShapeIdx(0); if (!TYPES[i].effects) setEffects([]); setProgress(null); };
+    const pickType = (i: number) => { setTypeIdx(i); if (TYPES[i].machine) setSpecialsOpen(true); setShapeIdx(0); if (!TYPES[i].effects) setEffects([]); setProgress(null); setAdded(null); };
     // Clicking an effect adds it (up to two, in the order picked, as the game lists them) or takes it off again
     const toggleEffect = (e: ItemEffect) => {
+        setAdded(null);
         setEffects(prev => (prev.includes(e) ? prev.filter(x => x !== e) : prev.length < 2 ? [...prev, e] : prev));
         if (hasProgress(e)) setProgress(null);
     };
     const add = () => {
+        if (disabled) return;
         onAdd({ ...item, id: `${template.shape}_${template.color}_added_${Math.random().toString(36).substring(2, 8)}` });
         setAdded([moduleName(template.displayName), ...effects.map(e => (hasProgress(e) ? `${t(e)} ${value}%` : t(e)))].join(' · '));
     };
@@ -242,7 +242,7 @@ export default function AddModuleMenu({ onAdd, disabled }: { onAdd: (item: Inven
                                     {type.shapes.map((sh, i) => {
                                         const base = getBaseStats(sh);
                                         return (
-                                            <button key={sh.shape} onClick={() => { setShapeIdx(i); setProgress(null); }}
+                                            <button key={sh.shape} onClick={() => { setShapeIdx(i); setProgress(null); setAdded(null); }}
                                                 title={STATS.filter(s => base[s.key] !== 0).map(s => `${t(s.label)} ${fmt(base[s.key])}%`).join(', ')}
                                                 style={{ ...chip(sh === template, COLOR_MAP[type.color]), display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px', minWidth: '58px' }}>
                                                 <span style={{ height: '34px', display: 'flex', alignItems: 'center', transform: 'scale(0.6)' }}>
@@ -273,7 +273,7 @@ export default function AddModuleMenu({ onAdd, disabled }: { onAdd: (item: Inven
                             {progressEffect && (
                                 <Section title={progressEffect === 'Learning Algorithm' ? t('Learning progress') : t('Degrading: what is left')}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px', width: '100%' }}>
-                                        <input type="range" min={0} max={max} step={1} value={value} onChange={e => setProgress(Number(e.target.value))}
+                                        <input type="range" min={0} max={max} step={1} value={value} onChange={e => { setProgress(Number(e.target.value)); setAdded(null); }}
                                             style={{ flex: 1, accentColor: '#8fd19e' }} />
                                         <span style={{ minWidth: '84px', textAlign: 'right', color: '#ddd', fontVariantNumeric: 'tabular-nums', fontSize: '0.85em' }}>
                                             {value}% / {max}%
@@ -302,8 +302,8 @@ export default function AddModuleMenu({ onAdd, disabled }: { onAdd: (item: Inven
                                 </div>
                                 {added && <div style={{ color: '#4caf50', fontSize: '0.85em', marginTop: '2px' }}>{t('Added {item} to storage', { item: added })}</div>}
                             </span>
-                            <button onClick={add}
-                                style={{ padding: '7px 16px', borderRadius: '6px', border: '1px solid #2e4a35', background: 'rgba(76, 175, 80, 0.15)', color: '#8fd19e', cursor: 'pointer', fontWeight: 'bold' }}>
+                            <button onClick={add} disabled={disabled}
+                                style={{ padding: '7px 16px', borderRadius: '6px', border: '1px solid #2e4a35', background: 'rgba(76, 175, 80, 0.15)', color: '#8fd19e', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1, fontWeight: 'bold' }}>
                                 {t('Add to storage')}
                             </button>
                         </div>

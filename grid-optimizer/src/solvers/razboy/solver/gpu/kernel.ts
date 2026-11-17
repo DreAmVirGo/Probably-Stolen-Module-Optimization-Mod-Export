@@ -190,9 +190,9 @@ export const createSearchKernel = (root: TgpuRoot, setup: SolveSetup, seed: numb
         }
 
         if (nfCount > 0) {
-            myP = d.i32((4 * myP + nfCount * nfPerf) / 4);
-            myQ = d.i32((4 * myQ + nfCount * nfQual) / 4);
-            myE = d.i32((4 * myE + nfCount * nfEff) / 4);
+            myP = myP + nfCount * d.i32(nfPerf / 4);
+            myQ = myQ + nfCount * d.i32(nfQual / 4);
+            myE = myE + nfCount * d.i32(nfEff / 4);
         }
 
         pDelta = pDelta + myP;
@@ -351,9 +351,9 @@ export const createSearchKernel = (root: TgpuRoot, setup: SolveSetup, seed: numb
                     if (pool.$[adj].e < 0) nfE = nfE + pool.$[adj].e;
                 }
             }
-            p = d.i32((4 * p + nfCount * nfP) / 4);
-            q = d.i32((4 * q + nfCount * nfQ) / 4);
-            e = d.i32((4 * e + nfCount * nfE) / 4);
+            p = p + nfCount * d.i32(nfP / 4);
+            q = q + nfCount * d.i32(nfQ / 4);
+            e = e + nfCount * d.i32(nfE / 4);
         }
         s.totP.$ = s.totP.$ + p;
         s.totQ.$ = s.totQ.$ + q;

@@ -384,12 +384,13 @@ export default function SaveFileImporter({ onImport }: SaveFileImporterProps) {
                     const getIntValObj = (key: string) => {
                         const idx = _keys.indexOf(key);
                         if (idx !== -1 && item._values && item._values[idx] !== undefined) {
-                            return item._values[idx].valueInt;
+                            const value = item._values[idx]?.valueInt;
+                            return Number.isSafeInteger(value) ? value : null;
                         }
                         if (item._values && Array.isArray(item._values)) {
                             const valObj = item._values.find((v: any) => v?.['<identifier>k__BackingField'] === key);
                             if (valObj && valObj.valueInt !== undefined) {
-                                return valObj.valueInt;
+                                return Number.isSafeInteger(valObj.valueInt) ? valObj.valueInt : null;
                             }
                         }
                         return null;

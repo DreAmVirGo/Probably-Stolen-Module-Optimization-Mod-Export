@@ -127,11 +127,11 @@ export const evalPlacement = (
     myQ += qBonus;
     myE += eBonus;
 
-    // A quarter of the absorbed negatives per Negative Feedback, rounded toward zero as one quantity
+    // Truncate the quarter of the summed negatives per effect before adding it to the module's own stats.
     if (nfCount > 0) {
-        myP = Math.trunc((4 * myP + nfCount * nfPerf) / 4);
-        myQ = Math.trunc((4 * myQ + nfCount * nfQual) / 4);
-        myE = Math.trunc((4 * myE + nfCount * nfEff) / 4);
+        myP += nfCount * Math.trunc(nfPerf / 4);
+        myQ += nfCount * Math.trunc(nfQual / 4);
+        myE += nfCount * Math.trunc(nfEff / 4);
     }
 
     pDelta += myP;

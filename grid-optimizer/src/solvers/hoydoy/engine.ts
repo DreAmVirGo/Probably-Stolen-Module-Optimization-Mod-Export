@@ -308,9 +308,9 @@ export const calculateBoardStats = (
                 }
             }
 
-            absorbP = nfCount * 0.25 * nfPerf;
-            absorbQ = nfCount * 0.25 * nfQual;
-            absorbE = nfCount * 0.25 * nfEff;
+            absorbP = nfCount * Math.trunc(nfPerf / 4);
+            absorbQ = nfCount * Math.trunc(nfQual / 4);
+            absorbE = nfCount * Math.trunc(nfEff / 4);
         }
 
         internalStats.set(item.id, {
@@ -548,9 +548,9 @@ export const evaluatePlacementDelta = (
     myE += eBonus;
 
     if (nfCount > 0) {
-        myP += nfCount * 0.25 * nfPerf;
-        myQ += nfCount * 0.25 * nfQual;
-        myE += nfCount * 0.25 * nfEff;
+        myP += nfCount * Math.trunc(nfPerf / 4);
+        myQ += nfCount * Math.trunc(nfQual / 4);
+        myE += nfCount * Math.trunc(nfEff / 4);
     }
 
     pDelta += roundStat(myP);

@@ -3,10 +3,11 @@
  * the numbers on the page always mean the same thing
  *
  *   Bloom   this site's solver (solver/parallel.ts): water value, the 6000 ml cap, breakpoints, priority staging, workers with migration
- *   Razboy  github.com/Razboy20/probably-stolen-module-optimization (solvers/razboy, unchanged): one joint solve over the machines
+ *   Razboy  github.com/Razboy20/probably-stolen-module-optimization (solvers/razboy): one joint solve over the machines
  *           that are running, on the GPU when the browser has WebGPU, otherwise one search per core; each card keeps its own stat priorities
- *   hoydoy  github.com/hoydoy/probably-stolen-module-optimization (solvers/hoydoy, unchanged): one search per machine on the page
+ *   hoydoy  github.com/hoydoy/probably-stolen-module-optimization (solvers/hoydoy): one search per machine on the page
  *           itself; Run All starts them all at once, each using the modules no other machine held when it started
+ * Their searches retain the original algorithms; Negative Feedback stat rounding is aligned with this site's game evaluator.
  * The other two know nothing of this site's extras (water value, caps, breakpoints, the store goals, easing and relaxing, staging,
  * card-order priority): they solve the targets and maximized stats as set, the way their own sites do, with each card's own per-stat
  * priorities. Nor of this site's module locks (right-click): those are taken off before their solvers see the modules, so the special
@@ -23,8 +24,8 @@ import { runSolver as runRazboy } from './razboy/solver/client';
 export type SolverKind = 'bloom' | 'razboy' | 'hoydoy';
 export const SOLVERS: { value: SolverKind; label: string; title: string }[] = [
     { value: 'bloom', label: 'Bloom', title: "This site's solver" },
-    { value: 'razboy', label: 'Razboy', title: "Razboy's solver, unchanged (GPU when available)" },
-    { value: 'hoydoy', label: 'hoydoy', title: "hoydoy's original solver, unchanged" },
+    { value: 'razboy', label: 'Razboy', title: "Razboy's solver (GPU when available)" },
+    { value: 'hoydoy', label: 'hoydoy', title: "hoydoy's original solver" },
 ];
 // Where hoydoy and Razboy20 keep their own optimizers: the copies bundled here are snapshots, and theirs get the updates first
 export const SOLVER_SITES: Partial<Record<SolverKind, { author: string; url: string }>> = {
