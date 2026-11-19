@@ -11,7 +11,7 @@ registerHooks({
         return nextResolve(specifier, context);
     },
 });
-const { restoreSaveSettings, flushSaveSettings } = await import('../src/saveSettings.ts');
+const { restoreSaveSettings, flushSaveSettings, machineWatchKey, readMachineWatched } = await import('../src/saveSettings.ts');
 
 const storage = new Map();
 globalThis.localStorage = {
@@ -161,4 +161,53 @@ test('slot aliases isolate different game slots even when their machine uids ove
     const back = [machine('backA', 11, a.machineType), machine('backB', 22, b.machineType)];
     assert.deepEqual(restoreSaveSettings('slot 14 backup', back, defaults, [], () => {}, 14).map(m => m.uid), [22, 11]);
     assert.equal(localStorage.getItem('optimizer_degradation_days_backB'), '4');
+});
+
+
+test('watched choices follow stable machine uids through reordering and same-slot day backups', () => {
+    const a = machine('a', 11, 'Inv. > Furnace 1');
+    const b = machine('b', 22, 'Inv. > Furnace 2');
+    restore([a, b], 'save_14');
+    loadCurrent([b, a], 'save_14');
+    localStorage.setItem('optimizer_save_slot', '14');
+    localStorage.setItem(machineWatchKey(a.id), 'false');
+    // Checked is normally represented by no key, and must remain the default.
+    assert.equal(readMachineWatched(b.id), true);
+    flushSaveSettings();
+    const incoming = [machine('a2', 11, 'Inv. > New Bay > Furnace 2'), machine('new', 33, 'Inv. > Furnace 3'), machine('b2', 22, 'Inv. > New Bay > Furnace 1')];
+    const sorted = restoreSaveSettings('save_14_day42_20261119-120000', incoming, defaults, [], () => {}, 14);
+    assert.deepEqual(sorted.map(m => m.uid), [22, 11, 33]);
+    assert.equal(readMachineWatched('a2'), false);
+    assert.equal(localStorage.getItem(machineWatchKey('a2')), 'false');
+    assert.equal(readMachineWatched('b2'), true);
+    assert.equal(readMachineWatched('new'), true);
+    // The same uid in another slot must not inherit this slot's exclusion.
+    restoreSaveSettings('save_15', [machine('other', 11, a.machineType)], defaults, [], () => {}, 15);
+    assert.equal(readMachineWatched('other'), true);
+});
+
+test('legacy missing watch settings restore the checked default and clear any stale card key', () => {
+    const imported = machine('legacy', 11, 'Inv. > Furnace 1');
+    localStorage.setItem('optimizer_save_settings_save_1', JSON.stringify({
+        order: ['uid:11'], machines: { 'uid:11': { state: defaults(imported) } },
+    }));
+    localStorage.setItem(machineWatchKey(imported.id), 'false');
+    restore([imported]);
+    assert.equal(localStorage.getItem(machineWatchKey(imported.id)), null);
+    assert.equal(readMachineWatched(imported.id), true);
+});
+
+test('only the exact false preference disables watching and unavailable storage defaults to checked', () => {
+    assert.equal(readMachineWatched('m'), true);
+    for (const value of ['true', '', '0', 'FALSE']) {
+        localStorage.setItem(machineWatchKey('m'), value);
+        assert.equal(readMachineWatched('m'), true);
+    }
+    localStorage.setItem(machineWatchKey('m'), 'false');
+    assert.equal(readMachineWatched('m'), false);
+    const original = globalThis.localStorage;
+    try {
+        globalThis.localStorage = { getItem() { throw new Error('storage blocked'); } };
+        assert.equal(readMachineWatched('m'), true);
+    } finally { globalThis.localStorage = original; }
 });
