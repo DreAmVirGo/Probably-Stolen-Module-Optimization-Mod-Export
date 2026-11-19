@@ -25,6 +25,18 @@ export type RunningJobSaveItem = {
 };
 
 export const runningJobKey = (machineId: string) => `optimizer_running_job_${machineId}`;
+export const runningJobUnlockKey = (machineId: string) => `optimizer_running_job_unlocked_${machineId}`;
+
+// This is a viewer override for this imported snapshot, not a task-completion flag.
+export const readRunningJobUnlocked = (machineId: string): boolean => {
+    try { return localStorage.getItem(runningJobUnlockKey(machineId)) === 'true'; } catch { return false; }
+};
+export const writeRunningJobUnlocked = (machineId: string, unlocked: boolean): void => {
+    try {
+        if (unlocked) localStorage.setItem(runningJobUnlockKey(machineId), 'true');
+        else localStorage.removeItem(runningJobUnlockKey(machineId));
+    } catch { /* viewer preference */ }
+};
 
 const tag = (item: RunningJobSaveItem, key: string) => {
     const index = item._keys?.indexOf(key) ?? -1;
@@ -97,6 +109,8 @@ export const readStoredRunningJob = (machineId: string): RunningJob | null => {
 // separately from manual machine locks and never restored from saved settings.
 export const writeImportedRunningJob = (machineId: string, job: RunningJob | null | undefined): void => {
     try {
+        // A fresh save is a new authoritative snapshot, even if a caller reuses an id.
+        localStorage.removeItem(runningJobUnlockKey(machineId));
         if (job) localStorage.setItem(runningJobKey(machineId), JSON.stringify(job));
         else localStorage.removeItem(runningJobKey(machineId));
     } catch { /* no reliable saved metadata: the reader leaves the card unlocked */ }

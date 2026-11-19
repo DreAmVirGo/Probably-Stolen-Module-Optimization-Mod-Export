@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readRunningJob, readStoredRunningJob, runningJobKey, writeImportedRunningJob } from '../src/runningJobs.ts';
+import { readRunningJob, readStoredRunningJob, runningJobKey, writeImportedRunningJob, readRunningJobUnlocked, writeRunningJobUnlocked, runningJobUnlockKey } from '../src/runningJobs.ts';
 
 const keys = ['PROGRESS_TYPE_MACHINE_TAG', 'MACHINE_STATE_TAG', 'MACHINE_PROGRESS_CURRENT_TAG', 'MACHINE_PROGRESS_TARGET_TAG'];
 const machine = (state = 'STATE_WORKING', current = 10, required = 50) => ({
@@ -109,4 +109,25 @@ test('corrupt, inactive, complete or unknown cached records cannot create an aut
     }
     localStorage.setItem(runningJobKey('m'), '{broken');
     assert.equal(readStoredRunningJob('m'), null);
+});
+
+test('manual task unlock survives reading the snapshot and resets on authoritative import without changing manual locks', () => {
+    const first = detect(machine());
+    writeImportedRunningJob('m', first);
+    localStorage.setItem('optimizer_machine_locked_m', 'true');
+    assert.equal(readRunningJobUnlocked('m'), false);
+    writeRunningJobUnlocked('m', true);
+    assert.equal(readRunningJobUnlocked('m'), true);
+    assert.equal(readRunningJobUnlocked('other'), false);
+    assert.deepEqual(readStoredRunningJob('m'), first, 'unlock is not task completion');
+    writeImportedRunningJob('m', detect(machine('STATE_WORKING', 30, 50)));
+    assert.equal(readRunningJobUnlocked('m'), false);
+    assert.equal(readStoredRunningJob('m').current, 30);
+    assert.equal(localStorage.getItem('optimizer_machine_locked_m'), 'true');
+    writeRunningJobUnlocked('m', true);
+    writeImportedRunningJob('m', undefined);
+    assert.equal(localStorage.getItem(runningJobUnlockKey('m')), null);
+    writeRunningJobUnlocked('m', true);
+    writeRunningJobUnlocked('m', false);
+    assert.equal(readRunningJobUnlocked('m'), false);
 });
