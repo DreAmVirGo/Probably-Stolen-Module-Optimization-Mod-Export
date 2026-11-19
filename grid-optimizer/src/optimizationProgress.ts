@@ -99,6 +99,21 @@ export const progressTargetScore = (machines: readonly ProgressMachine[]): numbe
     return score;
 };
 
+/**
+ * A watched card's objective is independent of every other card. Explicit
+ * targets take precedence over that card's Auto gains; a card without targets
+ * watches its enabled Auto values. All-off cards have no comparable objective.
+ */
+export const watchedMachineScore = (machine: ProgressMachine): number[] => {
+    const targets = progressTargetScore([machine]);
+    if (targets.length > 0) return targets;
+    const { config, current } = machine;
+    const stats = STATS.filter(stat => enabled(config, stat) && config.maximizeStats[stat]);
+    const ranks = [...new Set(stats.map(stat => rank(config, stat)))].sort((a, b) => a - b);
+    return ranks.map(priority => stats.filter(stat => rank(config, stat) === priority)
+        .reduce((sum, stat) => sum + autoWorth(config, reading(config, current, stat), stat), 0));
+};
+
 export const progressTargetSummary = (machines: readonly ProgressMachine[]) => {
     let targetCount = 0, metTargetCount = 0;
     for (const machine of machines) {
@@ -134,12 +149,17 @@ export type ProgressClockOptions = { warmupMs?: number; idleMs?: number };
 export const createProgressClock = ({ warmupMs = 0, idleMs = 60_000 }: ProgressClockOptions = {}) => {
     let context: string | null = null;
     let best: number[] = [];
+    let observationMode: 'score' | 'machines' | null = null;
+    const machineBests = new Map<string, number[]>();
     let observedAt = 0;
     let progressAt = 0;
     let sessionStartedAt: number | null = null;
     let stoppedAt: number | null = null;
     let quietMs = Number.isFinite(idleMs) ? Math.max(0, idleMs) : 60_000;
-    const clearObservation = () => { context = null; best = []; observedAt = 0; progressAt = 0; };
+    const clearObservation = () => {
+        context = null; best = []; observationMode = null; machineBests.clear();
+        observedAt = 0; progressAt = 0;
+    };
     const clear = () => { clearObservation(); sessionStartedAt = null; stoppedAt = null; };
     return {
         start: (now: number) => {
@@ -155,14 +175,48 @@ export const createProgressClock = ({ warmupMs = 0, idleMs = 60_000 }: ProgressC
                 sessionStartedAt = now;
                 stoppedAt = null;
             }
-            if (context !== contextKey || best.length !== score.length || now < observedAt) {
+            if (context !== contextKey || observationMode !== 'score' || best.length !== score.length || now < observedAt) {
                 context = contextKey;
+                observationMode = 'score';
+                machineBests.clear();
                 best = [...score];
                 observedAt = now;
                 progressAt = now;
             } else if (compare(score, best) > 0) {
                 best = [...score];
                 progressAt = now;
+            }
+        },
+        observeMachines: (contextKey: string, machines: readonly ProgressMachine[], now: number) => {
+            const observations = new Map<string, number[]>();
+            for (const machine of machines) {
+                const score = watchedMachineScore(machine);
+                if (score.length > 0 && score.every(Number.isFinite)) observations.set(machine.id, score);
+            }
+            if (!contextKey || observations.size === 0) { clearObservation(); return; }
+            if (!Number.isFinite(now)) return;
+            if (sessionStartedAt === null || stoppedAt !== null) {
+                sessionStartedAt = now;
+                stoppedAt = null;
+            }
+            const changedMachines = observations.size !== machineBests.size
+                || [...observations].some(([id, score]) => machineBests.get(id)?.length !== score.length);
+            if (context !== contextKey || observationMode !== 'machines' || changedMachines || now < observedAt) {
+                context = contextKey;
+                observationMode = 'machines';
+                machineBests.clear();
+                for (const [id, score] of observations) machineBests.set(id, [...score]);
+                observedAt = now;
+                progressAt = now;
+            } else {
+                let improved = false;
+                for (const [id, score] of observations) {
+                    if (compare(score, machineBests.get(id)!) > 0) {
+                        machineBests.set(id, [...score]);
+                        improved = true;
+                    }
+                }
+                if (improved) progressAt = now;
             }
         },
         setIdleMs: (value: number) => { quietMs = Number.isFinite(value) ? Math.max(0, value) : 60_000; },

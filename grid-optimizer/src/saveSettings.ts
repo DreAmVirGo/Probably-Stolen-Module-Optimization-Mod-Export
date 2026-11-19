@@ -20,6 +20,8 @@ type MachineSettings = {
     chipset: string | null;
     autoDays: string | null;
     degradationDays?: string | null;
+    // Whether this card participates in the viewer's progress/target watch.
+    watch?: string | null;
     // The Hydroponic plant, DNA complexity or 3D Printer chip picked on its cards (machineJobs)
     job?: string | null;
     locked: string | null;
@@ -37,6 +39,11 @@ const get = (key: string) => { try { return localStorage.getItem(key); } catch {
 const set = (key: string, value: string | null) => {
     try { if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value); } catch { /* storage unavailable */ }
 };
+
+export const machineWatchKey = (machineId: string) => `optimizer_machine_watch_${machineId}`;
+// Existing viewers and newly imported machines start checked. Storage failures
+// must not silently exclude a machine from the watched target summary.
+export const readMachineWatched = (machineId: string): boolean => get(machineWatchKey(machineId)) !== 'false';
 
 // "name#n": the n-th machine (from 0) with that name in the save file, so two machines with the same name keep their own settings.
 // Given at import and kept per card (cardKey), so reordering the cards does not swap them
@@ -94,6 +101,7 @@ const snapshot = () => {
             chipset: get(desequencerChipsetKey(id)),
             autoDays: get(desequencerAutoDaysKey(id)),
             degradationDays: get(`optimizer_degradation_days_${id}`),
+            watch: get(machineWatchKey(id)),
             job: get(machineJobKey(id)),
             locked: get(`optimizer_machine_locked_${id}`),
             lockedUids,
@@ -155,6 +163,7 @@ export const restoreSaveSettings = <M extends Imported>(save: string, machines: 
         set(desequencerChipsetKey(m.id), s?.chipset ?? null);
         set(desequencerAutoDaysKey(m.id), s?.autoDays ?? null);
         set(`optimizer_degradation_days_${m.id}`, s?.degradationDays ?? null);
+        set(machineWatchKey(m.id), s?.watch ?? null);
         // What the save has the machine working on wins over the job remembered for it
         set(machineJobKey(m.id), m.job ?? s?.job ?? null);
         set(`optimizer_machine_locked_${m.id}`, s?.locked ?? null);

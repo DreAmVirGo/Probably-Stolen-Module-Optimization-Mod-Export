@@ -1,14 +1,15 @@
 import type { OptimizationProgress } from '../hooks/useOptimizationProgress';
 import type { LearningSummary } from '../learningStatus';
-import { t, useLang } from '../i18n';
+import { plural, t, useLang } from '../i18n';
 import { LearningStatus } from './LearningStatus';
 
 const IDLE_OPTIONS = [10, 20, 30, 60, 90];
 
-export const OptimizationNotice = ({ progress, idleThreshold, onIdleThresholdChange, learning }: {
+export const OptimizationNotice = ({ progress, idleThreshold, onIdleThresholdChange, selectedCount, learning }: {
     progress: OptimizationProgress | null;
     idleThreshold: number;
     onIdleThresholdChange: (seconds: number) => void;
+    selectedCount: number;
     learning?: LearningSummary | null;
 }) => {
     useLang();
@@ -16,7 +17,8 @@ export const OptimizationNotice = ({ progress, idleThreshold, onIdleThresholdCha
     const total = progress?.targetCount ?? 0;
     const met = progress?.metTargetCount ?? 0;
     const allMet = total > 0 && met === total;
-    const stalled = Boolean(progress?.running && progress.stable && total > 0 && !allMet);
+    const stalled = Boolean(progress?.running && progress.stable);
+    const watched = progress?.running ? progress.watchedCount : selectedCount;
     const color = allMet ? '#b6d9bd' : total > 0 ? '#f0cd8d' : '#bdbdbd';
     return (
         <div data-optimization-status="true" style={{
@@ -31,7 +33,7 @@ export const OptimizationNotice = ({ progress, idleThreshold, onIdleThresholdCha
                     {t('Elapsed: {s}s', { s: elapsed })}
                 </strong>
                 <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', color: '#bbb' }}
-                    title={t('Show a hint after this many seconds without improvement. This does not stop the optimizer.')}>
+                    title={t('Show a hint after this many seconds without a new best on watched machines. This does not stop the optimizer.')}>
                     {t('No-improvement threshold')}
                     <select aria-label={t('No-improvement threshold')} value={idleThreshold}
                         onChange={event => {
@@ -49,11 +51,14 @@ export const OptimizationNotice = ({ progress, idleThreshold, onIdleThresholdCha
                 </div>
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px 14px', color: '#aaa' }}>
+                <span data-watched-count={watched}>
+                    {watched === 0 ? t(progress?.running && selectedCount > 0 ? 'No watched machines are running.' : 'No machines selected for improvement hints.')
+                        : t(progress?.running ? 'Watching {n} running machine{s}' : 'Watching {n} machine{s}', { n: watched, s: plural(watched) })}
+                </span>
                 {total > 0 && <span>{t('Target status includes degradation protection.')}</span>}
-                {stalled && <span role="status" style={{ color: '#f0cd8d' }}>{t('No target improvement for {s}s.', { s: progress!.idleSeconds })}</span>}
+                {stalled && <span role="status" style={{ color: '#f0cd8d' }}>{t('No new best on watched machines for {s}s.', { s: progress!.idleSeconds })}</span>}
                 {progress?.running && <span>{t('The search continues; Auto values may still improve.')}</span>}
                 {!progress?.running && <span>{t(elapsed > 0 ? 'Optimization stopped.' : 'Ready to optimize.')}</span>}
-                {progress?.running && progress.stable && total === 0 && <span>{t('No Auto improvement for {s}s.', { s: progress.idleSeconds })}</span>}
             </div>
             {learning && <LearningStatus summary={learning} />}
         </div>

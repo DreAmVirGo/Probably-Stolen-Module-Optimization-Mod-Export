@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, forwardRef, useImperativeHandle, useCallback, useMemo, useSyncExternalStore } from 'react';
 import { encodeModExport, boardModules, machineUidKey, SAVE_DAY_KEY } from './modExport';
-import { rememberSaveSettings, restoreSaveSettings } from './saveSettings';
+import { machineWatchKey, readMachineWatched, rememberSaveSettings, restoreSaveSettings } from './saveSettings';
 import { ALARM_SURE_STOP, harvestIcon, machineJobKey, alarmStopChance, defaultIgnoreStats, statUnit, defaultMaximizeStats, defaultTargetStats, desequencerDayOptions, desequencerChipsetKey, desequencerAutoDaysKey, statBreakpoints, isDesequencer, isMirage, isMoistureFarm, isAgeWell, sumsPE, jobSteps, isEvaporator, EVAPORATOR_QUALITY_CAP, worthlessBelowSteps, desequencerSpeed, desequencerCutoffs, statHasNoEffect, hiddenStat, statEffect, cheapEnergyAt, moistureFarmOutput, WATER_GRADES, miragePoints, STORE_BASE_ATTRACTIVENESS_KEY } from './machineDefaults';
 import { StatGoals } from './components/StatGoals';
 import { StatPercentages } from './components/StatPercentages';
@@ -180,6 +180,8 @@ const MachineInstance = React.memo(forwardRef(({
                                                    onStopMachine,
                                                    onToggleLock,
                                                    onRunMachine,
+                                                   watchImprovements,
+                                                   onWatchImprovementsChange,
                                                    solverKind
                                                }: any, ref) => {
     useLang();
@@ -959,6 +961,13 @@ const MachineInstance = React.memo(forwardRef(({
                         />
                     )}
 
+                    <label style={{ display: 'flex', alignItems: 'center', alignSelf: 'flex-start', gap: '5px', fontSize: '0.75em', color: '#bbb', cursor: 'pointer' }}
+                        title={t('Only a new best on this machine postpones the no-improvement hint.')}>
+                        <input type="checkbox" checked={watchImprovements}
+                            onChange={event => onWatchImprovementsChange(machineId, event.target.checked)}
+                            style={{ accentColor: '#80c78b' }} />
+                        {t('Watch improvements')}
+                    </label>
                     <div style={{ display: 'flex', gap: '5px', width: '100%' }}>
                         <button
                             onClick={() => {
@@ -1075,6 +1084,17 @@ export default function ModuleInventoryUI() {
         }
         return [{ id: `m_${Math.random().toString(36).substring(2,8)}` }];
     });
+    const [unwatchedIds, setUnwatchedIds] = useState(() => new Set(machines.filter(m => !readMachineWatched(m.id)).map(m => m.id)));
+    const changeWatchImprovements = useCallback((id: string, watched: boolean) => {
+        setUnwatchedIds(previous => {
+            const next = new Set(previous);
+            if (watched) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+        try { localStorage.setItem(machineWatchKey(id), String(watched)); } catch { /* viewer preference */ }
+        rememberSaveSettings();
+    }, []);
 
     useEffect(() => {
         localStorage.setItem('optimizer_machine_list', JSON.stringify(machines));
@@ -1791,6 +1811,7 @@ export default function ModuleInventoryUI() {
             if (m.kind) localStorage.setItem(`optimizer_machine_kind_${m.id}`, m.kind);
             if (m.uid !== undefined) localStorage.setItem(machineUidKey(m.id), String(m.uid));
         });
+        setUnwatchedIds(new Set(newMachines.filter(m => !readMachineWatched(m.id)).map(m => m.id)));
 
         setMachines(prev => {
             prev.forEach(m => {
@@ -1798,6 +1819,7 @@ export default function ModuleInventoryUI() {
                 localStorage.removeItem(`optimizer_machine_type_${m.id}`);
                 localStorage.removeItem(`optimizer_machine_locked_${m.id}`); localStorage.removeItem(`optimizer_machine_kind_${m.id}`); localStorage.removeItem(machineUidKey(m.id)); localStorage.removeItem(saveTierKey(m.id));
                 localStorage.removeItem(runningJobKey(m.id)); localStorage.removeItem(runningJobUnlockKey(m.id));
+                localStorage.removeItem(machineWatchKey(m.id));
             });
             return newMachines.length > 0
                 ? newMachines.map(m => ({ id: m.id }))
@@ -2184,6 +2206,7 @@ export default function ModuleInventoryUI() {
                 localStorage.removeItem(`optimizer_machine_type_${m.id}`);
                 localStorage.removeItem(`optimizer_machine_locked_${m.id}`); localStorage.removeItem(`optimizer_machine_kind_${m.id}`); localStorage.removeItem(machineUidKey(m.id)); localStorage.removeItem(saveTierKey(m.id));
                 localStorage.removeItem(runningJobKey(m.id)); localStorage.removeItem(runningJobUnlockKey(m.id));
+                localStorage.removeItem(machineWatchKey(m.id));
             }
         });
 
@@ -2205,6 +2228,7 @@ export default function ModuleInventoryUI() {
         }
 
         setMachines(preservedMachines);
+        setUnwatchedIds(previous => new Set(preservedMachines.filter(m => previous.has(m.id)).map(m => m.id)));
     };
 
     const handleDuplicateMachine = useCallback((machineId: string) => {
@@ -2227,6 +2251,8 @@ export default function ModuleInventoryUI() {
         localStorage.removeItem(`optimizer_machine_type_${machineId}`);
         localStorage.removeItem(`optimizer_machine_locked_${machineId}`); localStorage.removeItem(`optimizer_machine_kind_${machineId}`); localStorage.removeItem(machineUidKey(machineId)); localStorage.removeItem(saveTierKey(machineId));
         localStorage.removeItem(runningJobKey(machineId)); localStorage.removeItem(runningJobUnlockKey(machineId));
+        localStorage.removeItem(machineWatchKey(machineId));
+        setUnwatchedIds(previous => new Set([...previous].filter(id => id !== machineId)));
     }, []);
 
     const handleSolvingChange = useCallback((id: string, solving: boolean) => {
@@ -2272,20 +2298,21 @@ export default function ModuleInventoryUI() {
             return { id, config, current, futureByStat };
         });
         const progressMachines = targetMachines.filter(({ id }) => solvingRef.current[id]);
-        const context = JSON.stringify([solveGeneration.current, solverKind, machines.map(m => m.id), targetMachines.map(({ id, config }) => {
-            // Auto speed can change the derived job duration. Reset on the actual
-            // user's choices, so improving Auto cannot continually restart warmup.
-            const goals = { ...config };
-            delete goals.degradationDays;
-            delete goals.degradationUses;
+        const watchedMachines = progressMachines.filter(({ id }) => !unwatchedIds.has(id));
+        const context = JSON.stringify([solverKind, watchedMachines.map(({ id, config }) => {
+            // Use the watched card's settings, without board-derived values such
+            // as the protection window or a furnace's current Blast breakpoints.
             const read = (key: string) => { try { return localStorage.getItem(key); } catch { return null; } };
-            return [goals, read(machineJobKey(id)), read(desequencerChipsetKey(id)), read(desequencerAutoDaysKey(id)), read(`optimizer_degradation_days_${id}`)];
+            return [id, read(`optimizer_machine_type_${id}`), config.tier, config.targetStats, config.maximizeStats, config.ignoreStats, config.statPriority,
+                read(machineJobKey(id)), read(desequencerChipsetKey(id)), read(desequencerAutoDaysKey(id)), read(`optimizer_degradation_days_${id}`)];
         })]);
-        return { context, machines: progressMachines, targetMachines };
+        return { context, machines: progressMachines, targetMachines, watchedMachines };
         // Boards and goals live inside card refs; their throttled notification
         // changes boardVersion and refreshes the snapshot reader while stopped.
-    }, [machines, expandedInventory, solverKind, solvingStates, boardVersion]);
-    const optimizationProgress = useOptimizationProgress(readProgressSnapshot, isAnySolving, String(solveGeneration.current), idleThreshold);
+    }, [machines, expandedInventory, solverKind, solvingStates, boardVersion, unwatchedIds]);
+    const selectedWatchCount = machines.filter(({ id }) => !unwatchedIds.has(id)).length;
+    const watchSelectionKey = JSON.stringify([...unwatchedIds].sort());
+    const optimizationProgress = useOptimizationProgress(readProgressSnapshot, isAnySolving, String(solveGeneration.current), idleThreshold, watchSelectionKey);
     const learningSummary = useMemo(() => {
         if (machines.some(({ id }) => !machinesRef.current[id]?.getBoard())) return null;
         return summariseLearning(inventory, machines.map(({ id }) => ({
@@ -2596,7 +2623,7 @@ export default function ModuleInventoryUI() {
             <div style={{ position: 'sticky', top: 0, zIndex: 100, backgroundColor: '#111', width: '100%', marginBottom: '16px',
                 boxShadow: '0 6px 10px -6px rgba(0, 0, 0, 0.8)' }}>
             <OptimizationNotice progress={optimizationProgress} idleThreshold={idleThreshold}
-                onIdleThresholdChange={changeIdleThreshold} learning={learningSummary} />
+                onIdleThresholdChange={changeIdleThreshold} learning={learningSummary} selectedCount={selectedWatchCount} />
             <div className="toolbar" style={{
                 display: 'flex', gap: '15px', justifyContent: 'space-between', alignItems: 'center', padding: '8px 16px', width: '100%',
                 boxSizing: 'border-box', backgroundColor: '#111'
@@ -2845,6 +2872,8 @@ export default function ModuleInventoryUI() {
                             solverKind={solverKind}
                             onToggleLock={handleToggleLock}
                             onRunMachine={onRunMachine}
+                            watchImprovements={!unwatchedIds.has(m.id)}
+                            onWatchImprovementsChange={changeWatchImprovements}
                         />
                       </div>
                     </div>
