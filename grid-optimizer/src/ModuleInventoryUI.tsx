@@ -330,21 +330,23 @@ const MachineInstance = React.memo(forwardRef(({
     const automaticDegradationDays = () => task ? task.remainingDays ?? 365 : taskProtectionDays(typeKey, machineId,
         !optimizer.ignoreStats.Performance && optimizer.targetStats.Performance !== null
             ? optimizer.targetStats.Performance : optimizer.bestTotals.Performance);
-    const degradationDays = () => Math.max(automaticDegradationDays(), degradationDaysOverride ?? 1);
+    const degradationDays = () => task ? automaticDegradationDays() : Math.max(automaticDegradationDays(), degradationDaysOverride ?? 1);
     const degradationUses = (): Partial<Stats> | undefined => {
-        if (task && (task.remainingDays === null || (degradationDaysOverride ?? 0) <= task.remainingDays)) return task.statProtectionUses;
+        // Saved manual protection applies to the next job; an imported job
+        // uses only the stats it will read before it finishes.
+        if (task) return task.statProtectionUses;
         // Idle Auto speed can change while solving, so a shorter pre-use window
         // is justified only when a hard speed minimum bounds the planned job.
         // This window describes the current board. Unlocked searches use a
         // separate bound, because candidate layouts can change the job speed.
-        if (!task && (optimizer.ignoreStats.Performance || optimizer.targetStats.Performance === null)) return undefined;
+        if (optimizer.ignoreStats.Performance || optimizer.targetStats.Performance === null) return undefined;
         const knownPlan = isDesequencer(typeKey) || Boolean(jobSteps(typeKey, machineId, 'Performance')?.some(step => step.days)) || degradationDaysOverride !== null;
         return knownPlan ? statProtectionUsesForDays(typeKey, degradationDays()) ?? undefined : undefined;
     };
     const optimizationDegradationUses = (): Partial<Stats> | undefined => runningJob && taskUnlockOverride
         ? unlockedTaskProtectionUses(runningJob,
             !optimizer.ignoreStats.Performance ? optimizer.targetStats.Performance : null,
-            inventory, degradationDaysOverride)
+            inventory)
         : degradationUses();
     const importedDay = (() => {
         if (runningJob) return runningJob.importedDay;
@@ -2305,7 +2307,7 @@ export default function ModuleInventoryUI() {
         const requirements = targetMachines.flatMap(({ id, config }) => {
             const targets = Object.entries(config.targetStats).filter(([stat, value]) => value !== null && !config.ignoreStats?.[stat as keyof Stats]);
             return targets.length ? [[id, config.tier, targets, read(machineJobKey(id)), read(desequencerChipsetKey(id)),
-                read(desequencerAutoDaysKey(id)), read(`optimizer_degradation_days_${id}`)]] : [];
+                read(desequencerAutoDaysKey(id)), readStoredRunningJob(id) ? null : read(`optimizer_degradation_days_${id}`)]] : [];
         });
         const watchSettings = watchedMachines.map(({ id, config }) => [id, read(`optimizer_machine_type_${id}`),
             config.tier, config.maximizeStats, config.ignoreStats, config.statPriority]);

@@ -15,25 +15,23 @@ const degrading = (id, value, extra = {}) => ({
 
 test('an explicit minimum protects only remaining work rather than restarting the full job', () => {
     const running = job({ current: 72 });
-    assert.deepEqual(unlockedTaskProtectionUses(running, 0, [], null), stats(0));
-    assert.deepEqual(unlockedTaskProtectionUses(job(), 0, [], null), stats(3));
+    assert.deepEqual(unlockedTaskProtectionUses(running, 0, []), stats(0));
+    assert.deepEqual(unlockedTaskProtectionUses(job(), 0, []), stats(3));
     assert.equal(running.current, 72);
 });
 
 test('the hard Performance minimum, rather than a fast initial layout, bounds an unlocked solve', () => {
     const running = job();
     assert.equal(deriveTaskSafety(running, 100).remainingDays, 2);
-    assert.deepEqual(unlockedTaskProtectionUses(running, 0, [], null), stats(3), 'minimum24 work/day needs4 uses, not the initial48work/day');
-    assert.deepEqual(unlockedTaskProtectionUses(running, 100, [], null), stats(1));
+    assert.deepEqual(unlockedTaskProtectionUses(running, 0, []), stats(3), 'minimum24 work/day needs4 uses, not the initial48work/day');
+    assert.deepEqual(unlockedTaskProtectionUses(running, 100, []), stats(1));
 });
 
-test('bounded task horizons retain the native per-stat sequence and extend for a manual override', () => {
+test('bounded task horizons retain the native per-stat sequence', () => {
     const desequencer = job({ kind: 'desequencer', current: 33, required: 99 });
-    assert.deepEqual(unlockedTaskProtectionUses(desequencer, 0, [], null), stats(2, 1, 1));
-    assert.deepEqual(unlockedTaskProtectionUses(desequencer, 0, [], 4), stats(4, 3, 3));
+    assert.deepEqual(unlockedTaskProtectionUses(desequencer, 0, []), stats(2, 1, 1));
     const hydroponic = job({ kind: 'hydroponic', current: 8, required: 24 });
-    assert.deepEqual(unlockedTaskProtectionUses(hydroponic, 0, [], null), stats(1));
-    assert.deepEqual(unlockedTaskProtectionUses(hydroponic, 0, [], 4), stats(3));
+    assert.deepEqual(unlockedTaskProtectionUses(hydroponic, 0, []), stats(1));
 });
 
 test('Auto Performance uses full wear even beyond365 uses and ignores unrelated stable items', () => {
@@ -42,28 +40,25 @@ test('Auto Performance uses full wear even beyond365 uses and ignores unrelated 
         degrading('snapshot', 25, { currentStats: stats(900, 0, -8) }),
         degrading('stable', 2000, { effects: ['None', 'None'] }),
     ];
-    assert.deepEqual(unlockedTaskProtectionUses(job(), null, inventory, null), stats(900));
-    assert.deepEqual(unlockedTaskProtectionUses(job(), null, inventory, 1000), stats(1000));
+    assert.deepEqual(unlockedTaskProtectionUses(job(), null, inventory), stats(900));
     assert.equal(inventory[1].currentStats.Performance, 900);
 });
 
 test('full wear honors edited snapshot positives and repeated Degrading consumption', () => {
     const duplicate = degrading('duplicate', 25, { effects: ['Degrading', 'Degrading'], effectValues: [25, 25], currentStats: stats(1001, 3, -18) });
-    assert.deepEqual(unlockedTaskProtectionUses(job(), null, [duplicate], null), stats(501));
-    assert.deepEqual(unlockedTaskProtectionUses(job(), null, [duplicate], 600), stats(600));
+    assert.deepEqual(unlockedTaskProtectionUses(job(), null, [duplicate]), stats(501));
 });
 
 test('a blocked or too-long hard minimum falls back to complete wear, without a365-use clamp', () => {
     const inventory = [degrading('longwear', 700)];
-    assert.deepEqual(unlockedTaskProtectionUses(job(), -100, inventory, null), stats(700));
+    assert.deepEqual(unlockedTaskProtectionUses(job(), -100, inventory), stats(700));
     assert.equal(deriveTaskSafety(job({ required: 10_000 }), 0).remainingDays, null);
-    assert.deepEqual(unlockedTaskProtectionUses(job({ required: 10_000 }), 0, inventory, null), stats(700));
-    for (const invalid of [NaN, Infinity, -Infinity]) assert.deepEqual(unlockedTaskProtectionUses(job(), invalid, inventory, null), stats(700));
+    assert.deepEqual(unlockedTaskProtectionUses(job({ required: 10_000 }), 0, inventory), stats(700));
+    for (const invalid of [NaN, Infinity, -Infinity]) assert.deepEqual(unlockedTaskProtectionUses(job(), invalid, inventory), stats(700));
 });
 
-test('stable inventory yields an explicit zero map in the full-wear fallback and respects overrides', () => {
+test('stable inventory yields an explicit zero map in the full-wear fallback', () => {
     const stable = degrading('stable', 900, { effects: ['Learning Algorithm', 'None'] });
-    assert.deepEqual(unlockedTaskProtectionUses(job(), null, [stable], null), stats(0));
-    assert.deepEqual(unlockedTaskProtectionUses(job(), -100, [], null), stats(0));
-    assert.deepEqual(unlockedTaskProtectionUses(job(), null, [stable], 4), stats(4));
+    assert.deepEqual(unlockedTaskProtectionUses(job(), null, [stable]), stats(0));
+    assert.deepEqual(unlockedTaskProtectionUses(job(), -100, []), stats(0));
 });
