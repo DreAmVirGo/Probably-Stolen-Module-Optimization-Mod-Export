@@ -293,29 +293,39 @@ const namedMachine = (id, extra = {}, current = stats(), future) => {
     return { ...value, id, config: { ...value.config, id } };
 };
 
-test('each watched card uses its own targets, or Auto only when it has no explicit targets', () => {
+test('watched scores contain Auto and Max only, with global target readiness handled separately', () => {
     const targeted = {
         targetStats: { Performance: 20, Quality: null, Efficiency: null },
-        maximizeStats: { Performance: true, Quality: true, Efficiency: false },
+        maximizeStats: { Performance: false, Quality: true, Efficiency: false },
         ignoreStats: { Performance: false, Quality: false, Efficiency: true },
     };
-    assert.deepEqual(watchedMachineScore(machine(targeted, stats(15, 10))), [-5]);
-    assert.deepEqual(watchedMachineScore(machine(targeted, stats(15, 999))), [-5]);
-    assert.deepEqual(watchedMachineScore(machine(targeted, stats(25, 999))), [0]);
+    assert.deepEqual(watchedMachineScore(machine(targeted, stats(15, 10))), [10]);
+    assert.deepEqual(watchedMachineScore(machine(targeted, stats(19, 999))), [999]);
+    assert.deepEqual(watchedMachineScore(machine(targeted, stats(20, 10))), [10]);
+    assert.deepEqual(watchedMachineScore(machine(targeted, stats(25, 10))), [10]);
+    assert.deepEqual(watchedMachineScore(machine(targeted, stats(25, 11))), [11]);
+    assert.deepEqual(watchedMachineScore(machine({ ...targeted, maximizeStats: { ...targeted.maximizeStats, Performance: true } }, stats(25, 11))), [36]);
+    const targetOnly = { ...targeted, maximizeStats: { Performance: false, Quality: false, Efficiency: false } };
+    assert.deepEqual(watchedMachineScore(machine(targetOnly, stats(20, 100))), []);
+    assert.deepEqual(watchedMachineScore(machine(targetOnly, stats(999, 100))), []);
     assert.deepEqual(watchedMachineScore(machine({}, stats(10))), [10]);
-    assert.deepEqual(watchedMachineScore(machine({ maximizeStats: { Performance: false, Quality: false, Efficiency: false } })), []);
 });
 
+
 test('any watched machine new record postpones the hint even when another card loses more', () => {
-    const target = { targetStats: { Performance: 100, Quality: null, Efficiency: null } };
+    const target = {
+        targetStats: { Performance: 100, Quality: null, Efficiency: null },
+        maximizeStats: { Performance: false, Quality: true, Efficiency: false },
+        ignoreStats: { Performance: false, Quality: false, Efficiency: true },
+    };
     const clock = createProgressClock({ idleMs: 10_000 });
-    clock.observeMachines('watched-goals', [namedMachine('A', target, stats(95)), namedMachine('B', target, stats(95))], 0);
-    clock.observeMachines('watched-goals', [namedMachine('A', target, stats(96)), namedMachine('B', target, stats(0))], 9_000);
+    clock.observeMachines('watched-goals', [namedMachine('A', target, stats(100, 95)), namedMachine('B', target, stats(100, 95))], 0);
+    clock.observeMachines('watched-goals', [namedMachine('A', target, stats(100, 96)), namedMachine('B', target, stats(100, 0))], 9_000);
     assert.equal(clock.getIdleMs(10_000), 1_000);
     assert.equal(clock.isStable(10_000), false);
-    clock.observeMachines('watched-goals', [namedMachine('A', target, stats(96)), namedMachine('B', target, stats(95))], 18_000);
+    clock.observeMachines('watched-goals', [namedMachine('A', target, stats(100, 96)), namedMachine('B', target, stats(100, 95))], 18_000);
     assert.equal(clock.isStable(19_000), true, 'B merely recovered its previous best');
-    clock.observeMachines('watched-goals', [namedMachine('A', target, stats(0)), namedMachine('B', target, stats(96))], 19_001);
+    clock.observeMachines('watched-goals', [namedMachine('A', target, stats(100, 0)), namedMachine('B', target, stats(100, 96))], 19_001);
     assert.equal(clock.isStable(19_001), false, 'B earned its own new record despite A losing progress');
 });
 
@@ -348,22 +358,28 @@ test('an earlier-priority loss is never skipped to credit a later-priority gain'
     assert.equal(clock.isStable(10_002), false);
 });
 
-test('unwatched and stopped machines affect all-page target counts but never the watch clock', () => {
+test('unwatched and stopped target failures gate every watched Auto clock globally', () => {
     const clock = createProgressClock({ idleMs: 10_000 });
+    clock.start(0);
     const watched = namedMachine('watched', {}, stats(10));
-    const stoppedTarget = namedMachine('stopped', { targetStats: { Performance: 20, Quality: null, Efficiency: null } }, stats(19));
-    clock.observeMachines('watch-only-context', [watched], 0);
-    const unselectedImproved = namedMachine('unselected', {}, stats(999));
-    assert.deepEqual(progressTargetSummary([watched, stoppedTarget, unselectedImproved]), { targetCount: 1, metTargetCount: 0, targetsMet: false });
-    clock.observeMachines('watch-only-context', [watched], 9_999);
-    assert.equal(clock.isStable(10_000), true);
-    const targetMet = { ...stoppedTarget, current: stats(20) };
-    assert.deepEqual(progressTargetSummary([watched, targetMet, unselectedImproved]), { targetCount: 1, metTargetCount: 1, targetsMet: true });
-    clock.observeMachines('watch-only-context', [watched], 11_000);
-    assert.equal(clock.isStable(11_000), true, 'an unselected target improvement does not postpone the hint');
-    clock.observeMachines('watch-only-context', [{ ...watched, current: stats(11) }], 11_001);
-    assert.equal(clock.isStable(11_001), false, 'the selected Auto-only card still watches Auto despite page targets elsewhere');
+    const stopped = namedMachine('stopped', { targetStats: { Performance: 20, Quality: null, Efficiency: null } }, stats(19));
+    const ready = machines => { const summary = progressTargetSummary(machines); return summary.targetCount === 0 || summary.targetsMet; };
+    assert.equal(ready([watched, stopped]), false);
+    clock.observeMachines('watch-only-context', [watched], 0, ready([watched, stopped]));
+    clock.observeMachines('watch-only-context', [{ ...watched, current: stats(999) }], 9_999, ready([watched, stopped]));
+    assert.equal(clock.isStable(10_000), false);
+    assert.equal(clock.getIdleMs(10_000), 0);
+    const targetMet = { ...stopped, current: stats(20) };
+    clock.observeMachines('watch-only-context', [watched], 20_000, ready([watched, targetMet]));
+    assert.equal(clock.isStable(29_999), false);
+    clock.observeMachines('watch-only-context', [watched], 30_000, true);
+    assert.equal(clock.isStable(30_000), true);
+    clock.observeMachines('watch-only-context', [{ ...watched, current: stats(11) }], 30_001, true);
+    assert.equal(clock.isStable(30_001), false, 'invalid earlier Auto999 never became a personal best');
+    assert.equal(ready([watched]), true, 'pages with no explicit targets still watch Auto');
+    assert.equal(clock.getElapsedMs(30_001), 30_001);
 });
+
 
 test('no checked or evaluable cards clears stagnation without erasing elapsed time', () => {
     const clock = createProgressClock({ idleMs: 10_000 });
@@ -382,7 +398,7 @@ test('no checked or evaluable cards clears stagnation without erasing elapsed ti
     assert.equal(clock.isStable(50_001), true);
 });
 
-test('watched target progress includes future-only improvements and ignores same-card Auto growth', () => {
+test('protected target failures pause Auto records, while attainment and exact-target overshoot add no score', () => {
     const config = {
         degradationDays: 4,
         targetStats: { Performance: 20, Quality: null, Efficiency: null },
@@ -390,12 +406,20 @@ test('watched target progress includes future-only improvements and ignores same
         ignoreStats: { Performance: false, Quality: false, Efficiency: true },
     };
     const clock = createProgressClock({ idleMs: 10_000 });
-    clock.observeMachines('target', [machine(config, stats(25, 30), stats(16, 30))], 0);
-    clock.observeMachines('target', [machine(config, stats(25, 999), stats(16, 30))], 9_999);
-    assert.equal(clock.isStable(10_000), true);
-    clock.observeMachines('target', [machine(config, stats(25, 999), stats(17, 30))], 10_001);
-    assert.equal(clock.isStable(10_001), false);
+    clock.observeMachines('target', [machine(config, stats(25, 30), stats(16, 30))], 0, false);
+    clock.observeMachines('target', [machine(config, stats(25, 999), stats(19, 30))], 9_999, false);
+    assert.equal(clock.isStable(10_000), false);
+    clock.observeMachines('target', [machine(config, stats(25, 30), stats(20, 30))], 10_001, true);
+    clock.observeMachines('target', [machine(config, stats(27, 30), stats(22, 30))], 19_000, true);
+    assert.equal(clock.isStable(20_001), true, 'target overshoot does not restart the quiet clock');
+    clock.observeMachines('target', [machine(config, stats(30, 999), stats(19, 30))], 20_002, false);
+    assert.equal(clock.isStable(30_000), false, 'losing a protected target suppresses the hint');
+    clock.observeMachines('target', [machine(config, stats(25, 30), stats(20, 30))], 30_001, true);
+    assert.equal(clock.isStable(30_001), true, 'qualification recovery neither resets records nor discards accumulated quiet time');
+    clock.observeMachines('target', [machine(config, stats(25, 31), stats(20, 30))], 30_002, true);
+    assert.equal(clock.isStable(30_002), false);
 });
+
 
 test('watched selection changes and dropdown changes preserve the same elapsed session', () => {
     const clock = createProgressClock({ idleMs: 60_000 });
@@ -409,4 +433,65 @@ test('watched selection changes and dropdown changes preserve the same elapsed s
     clock.stop(31_500);
     assert.equal(clock.getElapsedMs(90_000), 30_500);
     assert.equal(clock.isStable(90_000), false);
+});
+
+test('unmet global targets freeze quiet time while real elapsed runtime continues', () => {
+    const clock = createProgressClock({ idleMs: 10_000 });
+    clock.start(0);
+    const watched = machine({}, stats(10));
+    clock.observeMachines('run', [watched], 0, true);
+    clock.observeMachines('run', [machine({}, stats(999))], 5_000, false);
+    assert.equal(clock.getIdleMs(25_000), 5_000);
+    assert.equal(clock.getElapsedMs(25_000), 25_000);
+    assert.equal(clock.isStable(25_000), false);
+    clock.observeMachines('run', [watched], 30_000, true);
+    assert.equal(clock.getIdleMs(30_000), 5_000);
+    assert.equal(clock.isStable(34_999), false);
+    assert.equal(clock.isStable(35_000), true);
+    clock.observeMachines('run', [watched], 36_000, false);
+    assert.equal(clock.getIdleMs(46_000), 11_000);
+    assert.equal(clock.isStable(46_000), false);
+    clock.observeMachines('run', [watched], 46_000, true);
+    assert.equal(clock.isStable(46_000), true);
+    assert.equal(clock.getElapsedMs(46_000), 46_000);
+});
+
+test('global target pulses plus repeated A/B layout recovery do not restart personal records', () => {
+    const clock = createProgressClock({ idleMs: 10_000 });
+    const initial = [namedMachine('A', {}, stats(10)), namedMachine('B', {}, stats(20))];
+    const swapped = [namedMachine('A', {}, stats(20)), namedMachine('B', {}, stats(10))];
+    clock.observeMachines('run', initial, 0, true);
+    clock.observeMachines('run', swapped, 9_000, true); // A earned its only new record.
+    clock.observeMachines('run', initial, 18_000, false);
+    clock.observeMachines('run', initial, 27_000, true); // B recovered, no new record.
+    assert.equal(clock.getIdleMs(27_000), 9_000);
+    clock.observeMachines('run', swapped, 27_500, false);
+    clock.observeMachines('run', swapped, 36_500, true); // A recovered, no new record.
+    assert.equal(clock.getIdleMs(36_500), 9_500);
+    assert.equal(clock.isStable(37_000), true);
+    clock.observeMachines('run', [namedMachine('A', {}, stats(21)), namedMachine('B', {}, stats(10))], 37_001, true);
+    assert.equal(clock.isStable(37_001), false);
+});
+
+test('selection or objective changes clear personal records even while global targets remain unmet', () => {
+    const clock = createProgressClock({ idleMs: 10_000 });
+    clock.start(0);
+    clock.observeMachines('old-goals', [machine({}, stats(100))], 0, true);
+    clock.observeMachines('new-goals', [machine({}, stats(200))], 5_000, false);
+    clock.observeMachines('new-goals', [machine({}, stats(10))], 20_000, true);
+    assert.equal(clock.getIdleMs(20_000), 0);
+    assert.equal(clock.isStable(20_000), false);
+    clock.observeMachines('new-goals', [machine({}, stats(11))], 29_999, true);
+    assert.equal(clock.isStable(30_000), false, 'new context was not held to the old100 or invalid200 record');
+    assert.equal(clock.getElapsedMs(30_000), 30_000);
+});
+
+test('target-only watched cards never create an Auto stagnation notice', () => {
+    const targeted = machine({ targetStats: { Performance: 20, Quality: null, Efficiency: null },
+        maximizeStats: { Performance: false, Quality: false, Efficiency: false } }, stats(20));
+    const clock = createProgressClock({ idleMs: 10_000 });
+    clock.start(0);
+    clock.observeMachines('targets-only', [targeted], 0, true);
+    assert.equal(clock.isStable(10_000), false);
+    assert.equal(clock.getElapsedMs(10_000), 10_000);
 });

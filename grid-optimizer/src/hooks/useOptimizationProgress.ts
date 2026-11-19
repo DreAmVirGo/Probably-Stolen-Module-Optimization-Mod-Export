@@ -20,8 +20,7 @@ export type OptimizationProgress = {
     elapsedSeconds: number;
     targetCount: number;
     metTargetCount: number;
-    // Selected running cards, including cards whose stats are all off. A hint
-    // still requires at least one comparable target or Auto objective.
+    // Selected running cards. A hint requires at least one Auto objective.
     watchedCount: number;
 };
 type SampledProgress = OptimizationProgress & { sampledSelectionKey: string };
@@ -50,8 +49,9 @@ export const useOptimizationProgress = (
         }
         const targetMachines = snapshot.targetMachines ?? snapshot.machines;
         const watched = snapshot.watchedMachines ?? snapshot.machines;
-        if (active) clock.observeMachines(snapshot.context, watched, now);
         const summary = progressTargetSummary(targetMachines);
+        const targetsReady = summary.metTargetCount === summary.targetCount;
+        if (active) clock.observeMachines(snapshot.context, watched, now, targetsReady);
         const next: SampledProgress = {
             ...summary,
             running: active,

@@ -962,7 +962,7 @@ const MachineInstance = React.memo(forwardRef(({
                     )}
 
                     <label style={{ display: 'flex', alignItems: 'center', alignSelf: 'flex-start', gap: '5px', fontSize: '0.75em', color: '#bbb', cursor: 'pointer' }}
-                        title={t('Only a new best on this machine postpones the no-improvement hint.')}>
+                        title={t('Watch this machine’s Auto records after all targets on the page are met.')}>
                         <input type="checkbox" checked={watchImprovements}
                             onChange={event => onWatchImprovementsChange(machineId, event.target.checked)}
                             style={{ accentColor: '#80c78b' }} />
@@ -2299,13 +2299,17 @@ export default function ModuleInventoryUI() {
         });
         const progressMachines = targetMachines.filter(({ id }) => solvingRef.current[id]);
         const watchedMachines = progressMachines.filter(({ id }) => !unwatchedIds.has(id));
-        const context = JSON.stringify([solverKind, watchedMachines.map(({ id, config }) => {
-            // Use the watched card's settings, without board-derived values such
-            // as the protection window or a furnace's current Blast breakpoints.
-            const read = (key: string) => { try { return localStorage.getItem(key); } catch { return null; } };
-            return [id, read(`optimizer_machine_type_${id}`), config.tier, config.targetStats, config.maximizeStats, config.ignoreStats, config.statPriority,
-                read(machineJobKey(id)), read(desequencerChipsetKey(id)), read(desequencerAutoDaysKey(id)), read(`optimizer_degradation_days_${id}`)];
-        })]);
+        const read = (key: string) => { try { return localStorage.getItem(key); } catch { return null; } };
+        // Rebaseline when a requirement changes, even on an unwatched card.
+        // Read the settings only, so moving modules cannot change this context.
+        const requirements = targetMachines.flatMap(({ id, config }) => {
+            const targets = Object.entries(config.targetStats).filter(([stat, value]) => value !== null && !config.ignoreStats?.[stat as keyof Stats]);
+            return targets.length ? [[id, config.tier, targets, read(machineJobKey(id)), read(desequencerChipsetKey(id)),
+                read(desequencerAutoDaysKey(id)), read(`optimizer_degradation_days_${id}`)]] : [];
+        });
+        const watchSettings = watchedMachines.map(({ id, config }) => [id, read(`optimizer_machine_type_${id}`),
+            config.tier, config.maximizeStats, config.ignoreStats, config.statPriority]);
+        const context = JSON.stringify([solverKind, requirements, watchSettings]);
         return { context, machines: progressMachines, targetMachines, watchedMachines };
         // Boards and goals live inside card refs; their throttled notification
         // changes boardVersion and refreshes the snapshot reader while stopped.
