@@ -16,9 +16,9 @@ import { canMachineTrainLearning, summariseLearning } from './learningStatus';
 import { inventoryRemovalReason, removeInventoryItem } from './inventoryRemoval';
 import { DegradationStatus } from './components/DegradationStatus';
 import { taskProtectionDays } from './machineDefaults';
-import { readStoredRunningJob, runningJobKey } from './runningJobs';
+import { readStoredRunningJob, runningJobKey, readRunningJobUnlocked, writeRunningJobUnlocked, runningJobUnlockKey } from './runningJobs';
 import type { RunningJob } from './runningJobs';
-import { deriveTaskSafety, statProtectionUsesForDays } from './taskSafety';
+import { deriveTaskSafety, statProtectionUsesForDays, unlockedTaskProtectionUses } from './taskSafety';
 import { RunningJobStatus } from './components/RunningJobStatus';
 import { readSolver, runSelectedSolver, setSolverLocked, SOLVER_SITES, subscribeSolver } from './solvers';
 import { StatPriorities } from './components/StatPriorities';
@@ -225,8 +225,12 @@ const MachineInstance = React.memo(forwardRef(({
         return localStorage.getItem(`optimizer_machine_locked_${machineId}`) === 'true';
     });
     const [runningJob] = useState(() => readStoredRunningJob(machineId));
-    const autoLocked = runningJob !== null;
+    const [taskUnlockOverride, setTaskUnlockOverride] = useState(() => Boolean(runningJob) && readRunningJobUnlocked(machineId));
+    const autoLocked = runningJob !== null && !taskUnlockOverride;
     const isMachineLocked = isManuallyLocked || autoLocked;
+    useEffect(() => {
+        writeRunningJobUnlocked(machineId, Boolean(runningJob) && taskUnlockOverride);
+    }, [machineId, runningJob, taskUnlockOverride]);
 
     const currentSolving = optimizer.isSolving || isThisMachineSolving;
 
@@ -329,11 +333,17 @@ const MachineInstance = React.memo(forwardRef(({
         if (task && (task.remainingDays === null || (degradationDaysOverride ?? 0) <= task.remainingDays)) return task.statProtectionUses;
         // Idle Auto speed can change while solving, so a shorter pre-use window
         // is justified only when a hard speed minimum bounds the planned job.
-        // Active tasks have a fixed, auto-locked board and an exact forecast.
+        // This window describes the current board. Unlocked searches use a
+        // separate bound, because candidate layouts can change the job speed.
         if (!task && (optimizer.ignoreStats.Performance || optimizer.targetStats.Performance === null)) return undefined;
         const knownPlan = isDesequencer(typeKey) || Boolean(jobSteps(typeKey, machineId, 'Performance')?.some(step => step.days)) || degradationDaysOverride !== null;
         return knownPlan ? statProtectionUsesForDays(typeKey, degradationDays()) ?? undefined : undefined;
     };
+    const optimizationDegradationUses = (): Partial<Stats> | undefined => runningJob && taskUnlockOverride
+        ? unlockedTaskProtectionUses(runningJob,
+            !optimizer.ignoreStats.Performance ? optimizer.targetStats.Performance : null,
+            inventory, degradationDaysOverride)
+        : degradationUses();
     const importedDay = (() => {
         if (runningJob) return runningJob.importedDay;
         try { const raw = localStorage.getItem(SAVE_DAY_KEY); const day = raw === null ? NaN : Number(raw); return Number.isSafeInteger(day) && day >= 0 ? day : null; } catch { return null; }
@@ -464,7 +474,7 @@ const MachineInstance = React.memo(forwardRef(({
     const runSolo = () => {
         if (autoLocked) return;
         return optimizer.runOptimization(targetSteps(), isMirage(typeKey), waterMode(), worthlessBelowSteps(typeKey), sumsPE(typeKey),
-            undefined, cheapEnergyAt(typeKey), qualityCap(), degradationDays(), canMachineTrainLearning(typeKey), degradationUses());
+            undefined, cheapEnergyAt(typeKey), qualityCap(), degradationDays(), canMachineTrainLearning(typeKey), optimizationDegradationUses());
     };
     useImperativeHandle(ref, () => ({
         run: (...args: Parameters<typeof optimizer.runOptimization>) => { if (!autoLocked) return optimizer.runOptimization(...args); },
@@ -479,6 +489,7 @@ const MachineInstance = React.memo(forwardRef(({
             targetStats: optimizer.targetStats,
             degradationDays: degradationDays(),
             degradationUses: degradationUses(),
+            optimizationDegradationUses: optimizationDegradationUses(),
             canTrainLearning: canMachineTrainLearning(typeKey),
             ignoreStats: optimizer.ignoreStats,
             statPriority: optimizer.statPriority,
@@ -707,9 +718,12 @@ const MachineInstance = React.memo(forwardRef(({
                             {showPaths ? t('Hide Paths') : t('Show Paths')}
                         </button>
                         <button
-                            onClick={() => { if (!autoLocked) setIsManuallyLocked(!isManuallyLocked); }}
-                            disabled={isAnySolving || autoLocked}
-                            title={autoLocked ? t('Running task: automatically locked until a fresh save confirms completion.') : undefined}
+                            onClick={() => {
+                                if (runningJob) setTaskUnlockOverride(isMachineLocked);
+                                setIsManuallyLocked(!isMachineLocked);
+                            }}
+                            disabled={isAnySolving}
+                            title={autoLocked ? t('Unlock this task manually to adjust modules.') : undefined}
                             style={{
                                 background: isMachineLocked ? 'rgba(255, 77, 77, 0.1)' : 'transparent',
                                 border: `1px solid ${isMachineLocked ? '#ff4d4d' : '#555'}`,
@@ -718,7 +732,7 @@ const MachineInstance = React.memo(forwardRef(({
                                 padding: '4px 8px', fontWeight: 'bold'
                             }}
                         >
-                            {autoLocked ? t('Task locked') : isManuallyLocked ? t('Unlock') : t('Lock')}
+                            {runningJob ? t(isMachineLocked ? 'Unlock task' : 'Relock task') : isManuallyLocked ? t('Unlock') : t('Lock')}
                         </button>
                     </div>
                     <div style={{ minWidth: 0, display: 'flex', justifyContent: 'flex-end' }}>
@@ -906,7 +920,7 @@ const MachineInstance = React.memo(forwardRef(({
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%', boxSizing: 'border-box' }}>
 
-                    <RunningJobStatus job={runningJob} task={task} autoLocked={autoLocked} />
+                    <RunningJobStatus job={runningJob} task={task} autoLocked={autoLocked} manuallyUnlocked={Boolean(runningJob) && taskUnlockOverride} />
                     <StatPercentages totals={optimizer.bestTotals} width={(7 * cellSize + 22) / 0.8} />
                     <StatGoals
                         machineType={typeKey}
@@ -1783,7 +1797,7 @@ export default function ModuleInventoryUI() {
                 localStorage.removeItem(`optimizer_machine_${m.id}`);
                 localStorage.removeItem(`optimizer_machine_type_${m.id}`);
                 localStorage.removeItem(`optimizer_machine_locked_${m.id}`); localStorage.removeItem(`optimizer_machine_kind_${m.id}`); localStorage.removeItem(machineUidKey(m.id)); localStorage.removeItem(saveTierKey(m.id));
-                localStorage.removeItem(runningJobKey(m.id));
+                localStorage.removeItem(runningJobKey(m.id)); localStorage.removeItem(runningJobUnlockKey(m.id));
             });
             return newMachines.length > 0
                 ? newMachines.map(m => ({ id: m.id }))
@@ -1836,7 +1850,7 @@ export default function ModuleInventoryUI() {
         const groupKey = (state: any) => JSON.stringify([
             String(state.machineKind).split(' > ').pop()!.replace(/\s+\d+$/, '').trim().toLowerCase(),
             state.ignoreStats, state.targetStats, state.maximizeStats, state.targetSteps,
-            state.degradationDays, state.degradationUses,
+            state.degradationDays, state.optimizationDegradationUses ?? state.degradationUses,
         ]);
         const priorities: number[] = [];
         states.forEach((state, i) => {
@@ -1851,7 +1865,7 @@ export default function ModuleInventoryUI() {
                 tier: state.tier,
                 targetStats: state.targetStats,
                 degradationDays: state.degradationDays,
-                degradationUses: state.degradationUses,
+                degradationUses: state.optimizationDegradationUses ?? state.degradationUses,
                 canTrainLearning: state.canTrainLearning,
                 maximizeStats: state.maximizeStats,
                 ignoreStats: state.ignoreStats,
@@ -2169,7 +2183,7 @@ export default function ModuleInventoryUI() {
                 localStorage.removeItem(`optimizer_machine_${m.id}`);
                 localStorage.removeItem(`optimizer_machine_type_${m.id}`);
                 localStorage.removeItem(`optimizer_machine_locked_${m.id}`); localStorage.removeItem(`optimizer_machine_kind_${m.id}`); localStorage.removeItem(machineUidKey(m.id)); localStorage.removeItem(saveTierKey(m.id));
-                localStorage.removeItem(runningJobKey(m.id));
+                localStorage.removeItem(runningJobKey(m.id)); localStorage.removeItem(runningJobUnlockKey(m.id));
             }
         });
 
@@ -2212,7 +2226,7 @@ export default function ModuleInventoryUI() {
         localStorage.removeItem(`optimizer_machine_${machineId}`);
         localStorage.removeItem(`optimizer_machine_type_${machineId}`);
         localStorage.removeItem(`optimizer_machine_locked_${machineId}`); localStorage.removeItem(`optimizer_machine_kind_${machineId}`); localStorage.removeItem(machineUidKey(machineId)); localStorage.removeItem(saveTierKey(machineId));
-        localStorage.removeItem(runningJobKey(machineId));
+        localStorage.removeItem(runningJobKey(machineId)); localStorage.removeItem(runningJobUnlockKey(machineId));
     }, []);
 
     const handleSolvingChange = useCallback((id: string, solving: boolean) => {
@@ -2236,6 +2250,7 @@ export default function ModuleInventoryUI() {
             const rank = progressRankByMachine.current[id] ?? 1;
             const config = { ...state, id, statPriority: solverKind === 'bloom'
                 ? { Performance: rank, Quality: rank, Efficiency: rank } : state.statPriority };
+            delete config.optimizationDegradationUses;
             const board = machinesRef.current[id].getBoard();
             const current = calculateBoardStats(board, expandedInventory, inventoryById).totals;
             const projected = new Map<number, Stats>([[0, current]]);

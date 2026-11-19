@@ -1,4 +1,5 @@
-import type { Stats } from './types';
+import type { InventoryItem, Stats } from './types';
+import { degradationLifetime } from './degradation';
 import type { RunningJob } from './runningJobs';
 import { desequencerSpeed, statUnit } from './machineDefaults';
 
@@ -83,6 +84,35 @@ export const deriveTaskSafety = (job: RunningJob | null | undefined, performance
         importedDay,
         completionDay: importedDay !== null && remainingDays !== null ? importedDay + remainingDays : null,
     };
+};
+
+/**
+ * Solver horizon for an imported running task after the user unlocks its board.
+ * The displayed forecast for the current board is not a safe solve constraint:
+ * Auto Performance may change as modules move. An explicit Performance minimum
+ * bounds the remaining duration. Without such a bound, protect every target
+ * through complete wear of every available module, after which stats are stable.
+ * This returns projection indices only, not a promise of task completion.
+ */
+export const unlockedTaskProtectionUses = (
+    job: RunningJob,
+    performanceMinimum: number | null,
+    inventory: Iterable<InventoryItem>,
+    protectionDaysOverride: number | null,
+): Stats => {
+    const override = protectionDaysOverride !== null && Number.isFinite(protectionDaysOverride)
+        ? Math.max(0, Math.ceil(protectionDaysOverride)) : 0;
+    if (performanceMinimum !== null && Number.isFinite(performanceMinimum)) {
+        const bounded = deriveTaskSafety(job, performanceMinimum);
+        if (bounded && bounded.remainingDays !== null) {
+            const uses = statProtectionUsesForDays(job.kind, Math.max(bounded.remainingDays, override || 1));
+            if (uses) return uses;
+        }
+    }
+    // Keep the full lifetime, including corrected snapshots and repeated effects;
+    // a 365-day simulation ceiling must not truncate a >365-use wear horizon.
+    const uses = Math.max(degradationLifetime(inventory), override);
+    return { Performance: uses, Quality: uses, Efficiency: uses };
 };
 
 export type TaskDropRisk = {
