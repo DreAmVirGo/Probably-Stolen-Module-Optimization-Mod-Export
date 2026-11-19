@@ -17,8 +17,9 @@ export const OptimizationNotice = ({ progress, idleThreshold, onIdleThresholdCha
     const total = progress?.targetCount ?? 0;
     const met = progress?.metTargetCount ?? 0;
     const allMet = total > 0 && met === total;
-    const stalled = Boolean(progress?.running && progress.stable);
     const watched = progress?.running ? progress.watchedCount : selectedCount;
+    const waitingForTargets = Boolean(progress?.running && total > 0 && !allMet && watched > 0);
+    const stalled = Boolean(progress?.running && progress.stable && watched > 0 && (total === 0 || allMet));
     const color = allMet ? '#b6d9bd' : total > 0 ? '#f0cd8d' : '#bdbdbd';
     return (
         <div data-optimization-status="true" style={{
@@ -33,7 +34,7 @@ export const OptimizationNotice = ({ progress, idleThreshold, onIdleThresholdCha
                     {t('Elapsed: {s}s', { s: elapsed })}
                 </strong>
                 <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', color: '#bbb' }}
-                    title={t('Show a hint after this many seconds without a new best on watched machines. This does not stop the optimizer.')}>
+                    title={t('After all targets are met, show a hint after this many seconds without a new Auto record on watched machines. This does not stop the optimizer.')}>
                     {t('No-improvement threshold')}
                     <select aria-label={t('No-improvement threshold')} value={idleThreshold}
                         onChange={event => {
@@ -56,8 +57,8 @@ export const OptimizationNotice = ({ progress, idleThreshold, onIdleThresholdCha
                         : t(progress?.running ? 'Watching {n} running machine{s}' : 'Watching {n} machine{s}', { n: watched, s: plural(watched) })}
                 </span>
                 {total > 0 && <span>{t('Target status includes degradation protection.')}</span>}
-                {stalled && <span role="status" style={{ color: '#f0cd8d' }}>{t('No new best on watched machines for {s}s.', { s: progress!.idleSeconds })}</span>}
-                {progress?.running && <span>{t('The search continues; Auto values may still improve.')}</span>}
+                {waitingForTargets && <span>{t('Waiting for all targets before watching Auto improvements.')}</span>}
+                {stalled && <span role="status" style={{ color: '#f0cd8d' }}>{t('No new Auto record on watched machines for {s}s.', { s: progress!.idleSeconds })}</span>}
                 {!progress?.running && <span>{t(elapsed > 0 ? 'Optimization stopped.' : 'Ready to optimize.')}</span>}
             </div>
             {learning && <LearningStatus summary={learning} />}
