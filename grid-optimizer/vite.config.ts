@@ -8,7 +8,7 @@ import typegpu from 'unplugin-typegpu/vite'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [typegpu(), react()],
-  base: '/Probably-Stolen-Module-Optimization-Mod-Export/',
+  base: './',
   define: {
     __BUILD_INFO__: JSON.stringify(createBuildInfo(fileURLToPath(new URL('.', import.meta.url)))),
   },

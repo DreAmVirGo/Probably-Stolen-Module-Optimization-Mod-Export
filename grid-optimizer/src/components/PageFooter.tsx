@@ -58,7 +58,7 @@ export const PageFooter = () => {
                 ))}
             </span>
             <a href="https://www.nexusmods.com/probablystolen/mods/274" target="_blank" rel="noopener noreferrer" style={link}>{t('Mod on Nexus')}</a>
-            <a href="https://github.com/blo-om/Probably-Stolen-Module-Optimization-Mod-Export" target="_blank" rel="noopener noreferrer" style={link}>GitHub</a>
+            <a href="https://github.com/DreAmVirGo/probably-stolen-optimizer" target="_blank" rel="noopener noreferrer" style={link}>GitHub</a>
             {/* Credits: the optimizers this site builds on, at their own sites */}
             <span style={{ flexBasis: '100%', textAlign: 'center' }}>
                 {t('Huge thanks to hoydoy and Razboy20 for their insane contributions to the community. Their own optimizers:')}{' '}
