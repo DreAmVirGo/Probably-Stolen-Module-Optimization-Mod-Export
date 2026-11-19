@@ -28,7 +28,7 @@ const listeners = new Set<() => void>();
 const applyDocument = () => {
     if (typeof document !== 'undefined') {
         document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
-        document.title = t('Module Optimizer (Mod Export)');
+        document.title = t('Probably Stolen Module Optimizer (Personal)');
     }
 };
 

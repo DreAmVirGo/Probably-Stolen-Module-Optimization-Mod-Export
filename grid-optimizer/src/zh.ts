@@ -89,7 +89,7 @@ export const ZH: Record<string, string> = {
     'This task finishes before this drop.': '本次任务会在这次下降前完成。',
     'This task can finish; the extra protection requirement is unmet.': '本次任务可以完成，但额外保护要求未满足。',
     // ---- page
-    'Module Optimizer (Mod Export)': '模组优化器（模组导出）',
+    'Probably Stolen Module Optimizer (Personal)': '深空当铺模组优化器（自用）',
     'Language': '语言',
     'Inv.': '库存',
     '{n} machine{s}': '{n}台机器',
