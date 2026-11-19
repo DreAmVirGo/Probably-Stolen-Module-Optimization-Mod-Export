@@ -98,20 +98,14 @@ export const unlockedTaskProtectionUses = (
     job: RunningJob,
     performanceMinimum: number | null,
     inventory: Iterable<InventoryItem>,
-    protectionDaysOverride: number | null,
 ): Stats => {
-    const override = protectionDaysOverride !== null && Number.isFinite(protectionDaysOverride)
-        ? Math.max(0, Math.ceil(protectionDaysOverride)) : 0;
     if (performanceMinimum !== null && Number.isFinite(performanceMinimum)) {
         const bounded = deriveTaskSafety(job, performanceMinimum);
-        if (bounded && bounded.remainingDays !== null) {
-            const uses = statProtectionUsesForDays(job.kind, Math.max(bounded.remainingDays, override || 1));
-            if (uses) return uses;
-        }
+        if (bounded?.remainingDays != null) return bounded.statProtectionUses;
     }
     // Keep the full lifetime, including corrected snapshots and repeated effects;
     // a 365-day simulation ceiling must not truncate a >365-use wear horizon.
-    const uses = Math.max(degradationLifetime(inventory), override);
+    const uses = degradationLifetime(inventory);
     return { Performance: uses, Quality: uses, Efficiency: uses };
 };
 
