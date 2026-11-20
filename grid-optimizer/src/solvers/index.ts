@@ -160,8 +160,9 @@ export const runSelectedSolver = async (
     isSolvingRef: { current: boolean },
     onUpdate: (updates: Updates, tiers?: number[]) => void
 ): Promise<void> => {
-    // Temporal hard targets require Bloom's dual current/future objective.
-    if (machines.some(m => ((m.degradationDays ?? 0) > 0 || m.degradationUses !== undefined) && Object.entries(m.targetStats).some(([key, target]) => target !== null && !m.ignoreStats?.[key as keyof Stats]))) kind = 'bloom';
+    // Bloom supports per-machine eligibility and temporal hard targets.
+    if (machines.some(m => m.forbiddenEffects?.length || (((m.degradationDays ?? 0) > 0 || m.degradationUses !== undefined)
+        && Object.entries(m.targetStats).some(([key, target]) => target !== null && !m.ignoreStats?.[key as keyof Stats])))) kind = 'bloom';
     const inventoryById = indexInventoryById(fullInventory);
     const pinned = (item: InventoryItem) => kind !== 'bloom' && (Boolean(item.isStuck) || isMachineModuleName(item.displayName));
     const pin = pinStuck(machines, boards, fullInventory, inventoryById, pinned);

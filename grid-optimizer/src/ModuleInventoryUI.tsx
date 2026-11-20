@@ -20,6 +20,9 @@ import { readStoredRunningJob, runningJobKey, readRunningJobUnlocked, writeRunni
 import type { RunningJob } from './runningJobs';
 import { deriveTaskSafety, statProtectionUsesForDays, unlockedTaskProtectionUses } from './taskSafety';
 import { RunningJobStatus } from './components/RunningJobStatus';
+import { ModuleRestrictions } from './components/ModuleRestrictions';
+import { allowsModuleEffects, machineRestrictionsKey, readForbiddenEffects } from './moduleRestrictions';
+import type { RestrictedModuleEffect } from './moduleRestrictions';
 import { readSolver, runSelectedSolver, setSolverLocked, SOLVER_SITES, subscribeSolver } from './solvers';
 import { StatPriorities } from './components/StatPriorities';
 import type { Stats, GridTier, InventoryItem, ModuleColor, Point } from './types';
@@ -244,9 +247,21 @@ const MachineInstance = React.memo(forwardRef(({
     // Save-imported machines are named by their path in the save ("Inv. > ..."); their name and tier come from
     // the save, so they are shown read-only. Machines added by hand keep the picker and the tier buttons.
     const isImportedMachine = machineType.startsWith('Inv.');
+    const [forbiddenEffects, setForbiddenEffects] = useState(() => readForbiddenEffects(machineId));
+    useEffect(() => {
+        try {
+            const key = machineRestrictionsKey(machineId);
+            if (forbiddenEffects.length) localStorage.setItem(key, JSON.stringify(forbiddenEffects));
+            else localStorage.removeItem(key);
+        } catch { /* viewer preference */ }
+        rememberSaveSettings();
+    }, [machineId, forbiddenEffects]);
+    const toggleRestriction = (effect: RestrictedModuleEffect, forbidden: boolean) => {
+        setForbiddenEffects(previous => forbidden ? [...new Set([...previous, effect])].sort() : previous.filter(value => value !== effect));
+    };
     // Where a module may go on this card: free cells, and a module this kind of machine takes (a machine-specific one only on its machine)
     const placeable = (item: InventoryItem, rootX: number, rootY: number, offsets: Point[]) =>
-        fitsMachine(item, typeKey) && optimizer.isValidPlacement(item, rootX, rootY, offsets);
+        allowsModuleEffects(item, forbiddenEffects) && fitsMachine(item, typeKey) && optimizer.isValidPlacement(item, rootX, rootY, offsets);
     // A machine type picked for this card (the card's dropdown, or the "+" card's list): numbered after the cards of that type, with
     // that machine's default goals
     const chooseType = (selected: string) => {
@@ -478,19 +493,22 @@ const MachineInstance = React.memo(forwardRef(({
     const runSolo = () => {
         if (autoLocked) return;
         return optimizer.runOptimization(targetSteps(), isMirage(typeKey), waterMode(), worthlessBelowSteps(typeKey), sumsPE(typeKey),
-            undefined, cheapEnergyAt(typeKey), qualityCap(), degradationDays(), canMachineTrainLearning(typeKey), optimizationDegradationUses());
+            undefined, cheapEnergyAt(typeKey), qualityCap(), degradationDays(), canMachineTrainLearning(typeKey), optimizationDegradationUses(), forbiddenEffects);
     };
     useImperativeHandle(ref, () => ({
         run: (...args: Parameters<typeof optimizer.runOptimization>) => { if (!autoLocked) return optimizer.runOptimization(...args); },
         runSolo,
         stop: optimizer.stopOptimization,
         clear: () => { if (!autoLocked) optimizer.resetBoard(); },
-        place: (...args: Parameters<typeof optimizer.manuallyPlaceItem>) => { if (!autoLocked) optimizer.manuallyPlaceItem(...args); },
+        place: (...args: Parameters<typeof optimizer.manuallyPlaceItem>) => {
+            if (!autoLocked && allowsModuleEffects(args[0], forbiddenEffects)) optimizer.manuallyPlaceItem(...args);
+        },
         remove: (...args: Parameters<typeof optimizer.manuallyRemoveItem>) => { if (!autoLocked) optimizer.manuallyRemoveItem(...args); },
         getState: () => ({
             tier: optimizer.tier,
             maximizeStats: optimizer.maximizeStats,
             targetStats: optimizer.targetStats,
+            forbiddenEffects,
             degradationDays: degradationDays(),
             degradationUses: degradationUses(),
             optimizationDegradationUses: optimizationDegradationUses(),
@@ -514,7 +532,7 @@ const MachineInstance = React.memo(forwardRef(({
         isLocked: () => isMachineLocked,
         isAutoLocked: () => autoLocked,
         getModExport: () => modExportEntry()
-    }), [optimizer, isMachineLocked, machineType, typeKey, autoLocked, task]);
+    }), [optimizer, isMachineLocked, machineType, typeKey, autoLocked, task, forbiddenEffects]);
 
     useEffect(() => {
         if (dragState && dragState.sourceMachineId === machineId && dragState.initialTarget && localHover === null) {
@@ -614,6 +632,12 @@ const MachineInstance = React.memo(forwardRef(({
     const currentPreviewValid = isTargetingThis && previewRootX !== null && previewRootY !== null
         ? placeable(dragState.item, previewRootX, previewRootY, dragState.offsets)
         : false;
+
+    const restrictedOnBoard = new Map<string, InventoryItem>();
+    if (forbiddenEffects.length) for (const cell of optimizer.board.flat()) {
+        if (cell && cell !== 'Locked' && !allowsModuleEffects(cell, forbiddenEffects)) restrictedOnBoard.set(cell.id, cell);
+    }
+    const pinnedRestrictedCount = [...restrictedOnBoard.values()].filter(item => item.isLocked || item.isStuck).length;
 
     return (
         <div
@@ -963,6 +987,10 @@ const MachineInstance = React.memo(forwardRef(({
                         />
                     )}
 
+                    <ModuleRestrictions forbiddenEffects={forbiddenEffects} onToggle={toggleRestriction}
+                        disabled={isAnySolving || currentSolving || Boolean(dragState)}
+                        movableCount={restrictedOnBoard.size - pinnedRestrictedCount} pinnedCount={pinnedRestrictedCount}
+                        usesBloomFallback={solverKind !== 'bloom' && forbiddenEffects.length > 0} />
                     <label style={{ display: 'flex', alignItems: 'center', alignSelf: 'flex-start', gap: '5px', fontSize: '0.75em', color: '#bbb', cursor: 'pointer' }}
                         title={t('Watch this machine’s Auto records after all targets on the page are met.')}>
                         <input type="checkbox" checked={watchImprovements}
@@ -1685,8 +1713,8 @@ export default function ModuleInventoryUI() {
             board.map(row => row.map(c => (c && c !== 'Locked' && items.some(it => it.id === c.id) ? null : c)));
 
         // The layout with `item` stored on `board`, moving at most `moves` of the machine's own modules, or null
-        const storeOn = (board: any[][], type: string, item: InventoryItem, moves: number): any[][] | null => {
-            if (!fitsMachine(item, type)) return null;
+        const storeOn = (board: any[][], type: string, forbiddenEffects: RestrictedModuleEffect[], item: InventoryItem, moves: number): any[][] | null => {
+            if (!fitsMachine(item, type) || !allowsModuleEffects(item, forbiddenEffects)) return null;
             const before = statsOf(board);
             const harmless = (next: any[][]) => { const after = statsOf(next); return STATS.every(k => statHasNoEffect(type, k) || after[k] >= before[k]); };
             if (moves === 0) {
@@ -1695,7 +1723,10 @@ export default function ModuleInventoryUI() {
             }
             // Modules that may move: this machine's own, not locked by the player
             const own: InventoryItem[] = [];
-            board.forEach(row => row.forEach(c => { if (c && c !== 'Locked' && !c.isLocked && !own.some(o => o.id === c.id)) own.push(c); }));
+            board.forEach(row => row.forEach(c => {
+                if (c && c !== 'Locked' && !c.isLocked && !c.isStuck && allowsModuleEffects(c, forbiddenEffects)
+                    && !own.some(o => o.id === c.id)) own.push(c);
+            }));
             const groups: InventoryItem[][] = moves === 1 ? own.map(o => [o]) : own.flatMap((a, i) => own.slice(i + 1).map(b => [a, b]));
             for (const group of groups) {
                 if (performance.now() > deadline) return null;
@@ -1733,7 +1764,8 @@ export default function ModuleInventoryUI() {
                 deadline = moves === 0 ? end : Math.min(end, performance.now() + 250);
                 for (const { id, card } of cards) {
                     const board: any[][] = card.getBoard();
-                    const next = storeOn(board, card.getState().machineKind, item, moves);
+                    const state = card.getState();
+                    const next = storeOn(board, state.machineKind, state.forbiddenEffects, item, moves);
                     if (!next) continue;
                     if (moves > 0 && !layouts[id]) layouts[id] = { before: startLayouts[id], after: [] };
                     const { totals, pieceStats } = calculateBoardStats(next, expandedInventory, byId);
@@ -1765,7 +1797,13 @@ export default function ModuleInventoryUI() {
                 if (layout) preservedLayouts[id] = layout;
                 continue;
             }
-            if (layout && same(idGrid(card.getBoard()), layout.after)) {
+            const current = card.getBoard();
+            const { forbiddenEffects } = card.getState();
+            const canRestore = layout?.before.every((row, y) => row.every((itemId, x) => {
+                const item = itemId ? byId.get(itemId) : undefined;
+                return !item || allowsModuleEffects(item, forbiddenEffects) || current[y][x]?.id === item.id;
+            }));
+            if (layout && canRestore && same(idGrid(current), layout.after)) {
                 // Untouched since the Store: exactly the layout it had before
                 const board = layout.before.map(row => row.map(c => (c === 'Locked' ? 'Locked' : c ? byId.get(c) ?? null : null)));
                 const { totals, pieceStats } = calculateBoardStats(board, expandedInventory, byId);
@@ -1822,6 +1860,7 @@ export default function ModuleInventoryUI() {
                 localStorage.removeItem(`optimizer_machine_locked_${m.id}`); localStorage.removeItem(`optimizer_machine_kind_${m.id}`); localStorage.removeItem(machineUidKey(m.id)); localStorage.removeItem(saveTierKey(m.id));
                 localStorage.removeItem(runningJobKey(m.id)); localStorage.removeItem(runningJobUnlockKey(m.id));
                 localStorage.removeItem(machineWatchKey(m.id));
+                localStorage.removeItem(machineRestrictionsKey(m.id));
             });
             return newMachines.length > 0
                 ? newMachines.map(m => ({ id: m.id }))
@@ -1874,7 +1913,7 @@ export default function ModuleInventoryUI() {
         const groupKey = (state: any) => JSON.stringify([
             String(state.machineKind).split(' > ').pop()!.replace(/\s+\d+$/, '').trim().toLowerCase(),
             state.ignoreStats, state.targetStats, state.maximizeStats, state.targetSteps,
-            state.degradationDays, state.optimizationDegradationUses ?? state.degradationUses,
+            state.degradationDays, state.optimizationDegradationUses ?? state.degradationUses, state.forbiddenEffects,
         ]);
         const priorities: number[] = [];
         states.forEach((state, i) => {
@@ -1888,6 +1927,7 @@ export default function ModuleInventoryUI() {
                 id: m.id,
                 tier: state.tier,
                 targetStats: state.targetStats,
+                forbiddenEffects: state.forbiddenEffects,
                 degradationDays: state.degradationDays,
                 degradationUses: state.optimizationDegradationUses ?? state.degradationUses,
                 canTrainLearning: state.canTrainLearning,
@@ -2209,6 +2249,7 @@ export default function ModuleInventoryUI() {
                 localStorage.removeItem(`optimizer_machine_locked_${m.id}`); localStorage.removeItem(`optimizer_machine_kind_${m.id}`); localStorage.removeItem(machineUidKey(m.id)); localStorage.removeItem(saveTierKey(m.id));
                 localStorage.removeItem(runningJobKey(m.id)); localStorage.removeItem(runningJobUnlockKey(m.id));
                 localStorage.removeItem(machineWatchKey(m.id));
+                localStorage.removeItem(machineRestrictionsKey(m.id));
             }
         });
 
@@ -2254,6 +2295,7 @@ export default function ModuleInventoryUI() {
         localStorage.removeItem(`optimizer_machine_locked_${machineId}`); localStorage.removeItem(`optimizer_machine_kind_${machineId}`); localStorage.removeItem(machineUidKey(machineId)); localStorage.removeItem(saveTierKey(machineId));
         localStorage.removeItem(runningJobKey(machineId)); localStorage.removeItem(runningJobUnlockKey(machineId));
         localStorage.removeItem(machineWatchKey(machineId));
+        localStorage.removeItem(machineRestrictionsKey(machineId));
         setUnwatchedIds(previous => new Set([...previous].filter(id => id !== machineId)));
     }, []);
 
