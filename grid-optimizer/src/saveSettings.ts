@@ -6,6 +6,7 @@
 // without a uid use the name/path and its occurrence as a fallback.
 import { SAVE_NAME_KEY, SAVE_SLOT_KEY, machineUidKey } from './modExport';
 import { desequencerAutoDaysKey, desequencerChipsetKey, machineJobKey } from './machineDefaults';
+import { machineRestrictionsKey } from './moduleRestrictions';
 
 const settingsKey = (save: string) => `optimizer_save_settings_${save}`;
 const slotSettingsKey = (slot: number | null | undefined) => typeof slot === 'number' && Number.isSafeInteger(slot) && slot >= 0
@@ -22,6 +23,8 @@ type MachineSettings = {
     degradationDays?: string | null;
     // Whether this card participates in the viewer's progress/target watch.
     watch?: string | null;
+    // Serialized per-card module-effect exclusions. Missing means no exclusions.
+    forbiddenEffects?: string | null;
     // The Hydroponic plant, DNA complexity or 3D Printer chip picked on its cards (machineJobs)
     job?: string | null;
     locked: string | null;
@@ -102,6 +105,7 @@ const snapshot = () => {
             autoDays: get(desequencerAutoDaysKey(id)),
             degradationDays: get(`optimizer_degradation_days_${id}`),
             watch: get(machineWatchKey(id)),
+            forbiddenEffects: get(machineRestrictionsKey(id)),
             job: get(machineJobKey(id)),
             locked: get(`optimizer_machine_locked_${id}`),
             lockedUids,
@@ -164,6 +168,7 @@ export const restoreSaveSettings = <M extends Imported>(save: string, machines: 
         set(desequencerAutoDaysKey(m.id), s?.autoDays ?? null);
         set(`optimizer_degradation_days_${m.id}`, s?.degradationDays ?? null);
         set(machineWatchKey(m.id), s?.watch ?? null);
+        set(machineRestrictionsKey(m.id), s?.forbiddenEffects ?? null);
         // What the save has the machine working on wins over the job remembered for it
         set(machineJobKey(m.id), m.job ?? s?.job ?? null);
         set(`optimizer_machine_locked_${m.id}`, s?.locked ?? null);

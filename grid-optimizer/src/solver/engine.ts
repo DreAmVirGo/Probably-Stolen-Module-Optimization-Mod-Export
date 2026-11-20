@@ -11,6 +11,7 @@ import type { InventoryItem, ModuleShape, Stats } from '../types';
 import { projectDegradation } from '../degradation';
 import { applyInternalEffects } from '../utils';
 import { getLearningProgress } from '../learningStatus';
+import { allowsModuleEffects } from '../moduleRestrictions';
 import type { Orientation } from '../utils';
 import { calculateBoardStats, indexInventoryById, isSpecialModule, buildSearchPool, generateCodeFromState } from '../hooks/useOptimizer';
 import type { MachineConfig } from '../hooks/useOptimizer';
@@ -415,8 +416,18 @@ export const runOptimizationEngine = async (
 
     // A module that came in locked on a board (right-click; the specials, Alarm / Junk Processing / Blast, start locked) belongs to its
     // board: it moves around it but never leaves. An unlocked special may be taken off; it is never put on another board (see buildSearchPool)
+    const allowed = machines.map(machine => Uint8Array.from(itemList, item => allowsModuleEffects(item, machine.forbiddenEffects) ? 1 : 0));
+    const allowedForParams = new Map(params.map((p, mIdx) => [p, allowed[mIdx]]));
     const fixed = new Uint8Array(N);
-    initialObjectBoards.forEach(b => b.forEach((row: any[]) => row.forEach(cell => { if (cell && cell !== 'Locked' && (cell.isLocked || cell.isStuck)) fixed[idx(cell)] = 1; })));
+    const immovable = new Uint8Array(N);
+    initialObjectBoards.forEach((board, mIdx) => board.forEach((row: (InventoryItem | 'Locked' | null)[]) => row.forEach(cell => {
+        if (!cell || cell === 'Locked') return;
+        const it = idx(cell), item = itemList[it];
+        // A caller may hold a newer lock on its inventory object than its board
+        // snapshot. Either effective lock protects an existing resident.
+        if (cell.isLocked || cell.isStuck || item.isLocked || item.isStuck) fixed[it] = 1;
+        if (cell.isStuck || item.isStuck || (fixed[it] && !allowed[mIdx][it])) immovable[it] = 1;
+    })));
     const overclock = new Uint8Array(N);
     const ocBonus = new Float64Array(N);
     // Learning Algorithm modules still short of their shaped cap (see LEARNING_BONUS).
@@ -442,10 +453,19 @@ export const runOptimizationEngine = async (
         return out;
     };
     const initialBoards = initialObjectBoards.map(toTyped);
+    let sanitizedInitial = false;
+    initialBoards.forEach((board, mIdx) => {
+        for (let cell = 0; cell < CELLS; cell++) {
+            const it = board[cell];
+            if (it >= 0 && !allowed[mIdx][it] && !fixed[it]) { board[cell] = EMPTY; sanitizedInitial = true; }
+        }
+    });
     const lockedMask = (b: Board) => { let m = ''; for (let c = 0; c < CELLS; c++) m += b[c] === LOCKED ? '1' : '0'; return m; };
 
     // ---- the search pool
-    const searchPool = buildSearchPool(searchPoolInventory, internalById, machines).map(idx);
+    // Fixed residents are repositioned through their own board's special pass,
+    // never drawn as incoming inventory (including stale inventory lock flags).
+    const searchPool = buildSearchPool(searchPoolInventory.filter(item => !fixed[idx(item)]), internalById, machines).map(idx);
     const P = searchPool.length;
     const poolOf = new Int32Array(N).fill(-1);
     searchPool.forEach((it, i) => { poolOf[it] = i; });
@@ -470,7 +490,8 @@ export const runOptimizationEngine = async (
      */
     const groupOf = (() => {
         const keys = machines.map((m, mIdx) => JSON.stringify([tierOfStat[mIdx], params[mIdx], stepsOf[mIdx], lockedMask(initialBoards[mIdx]),
-            m.performanceCap ?? null, m.worthlessBelowSteps ?? null, m.degradationDays ?? 0, m.degradationUses ?? null, m.canTrainLearning !== false]));
+            m.performanceCap ?? null, m.worthlessBelowSteps ?? null, m.degradationDays ?? 0, m.degradationUses ?? null, m.canTrainLearning !== false,
+            m.forbiddenEffects?.length ? [...m.forbiddenEffects].sort() : null]));
         const groups: number[][] = [];
         keys.forEach((k, mIdx) => {
             const g = groups.find(gr => keys[gr[0]] === k);
@@ -644,6 +665,7 @@ export const runOptimizationEngine = async (
             const stated: number[] = [];
             for (let i = 0; i < P; i++) {
                 const it = searchPool[i];
+                if (!allowed[mIdx][it]) { values[i] = -Infinity; continue; }
                 if (core.white[it] || core.size[it] === 0) continue;
                 values[i] = (fillCores[mIdx].IP[it] * w[0] + fillCores[mIdx].IQ[it] * w[1] + fillCores[mIdx].IE[it] * w[2]) / core.size[it];
                 stated.push(values[i]);
@@ -652,7 +674,7 @@ export const runOptimizationEngine = async (
             if (stated.length > 0) {
                 stated.sort((a, b) => a - b);
                 const median = stated[stated.length >> 1];
-                for (let i = 0; i < P; i++) if (core.white[searchPool[i]]) values[i] = median;
+                for (let i = 0; i < P; i++) if (core.white[searchPool[i]] && allowed[mIdx][searchPool[i]]) values[i] = median;
             }
             tables.push(values);
         }
@@ -710,6 +732,7 @@ export const runOptimizationEngine = async (
     const committed = new Float64Array(3);
     const placeBestFit = (it: number, board: Board, boardIsEmpty: boolean, w: number[], cur: number[], p: MachineParams,
         incumbent: { x: number; y: number; o: Orientation } | null = null) => {
+        if (allowedForParams.get(p)?.[it] === 0) return false;
         const placementCore = fillCoreFor.get(p) ?? core;
         const orientations = placementCore.orientations[it];
         if (!orientations) return false;
@@ -808,7 +831,7 @@ export const runOptimizationEngine = async (
             own.sort((a, b) => value[b] - value[a]);
             const swap = (from: number, to: number) => { for (let c = 0; c < CELLS; c++) if (board[c] === from) board[c] = to; };
             for (const piece of own) {
-                const candidates = spare.filter(q => core.shape[q] === core.shape[piece] && value[q] < value[piece]).sort((a, b) => value[a] - value[b]);
+                const candidates = spare.filter(q => allowed[mIdx][q] && core.shape[q] === core.shape[piece] && value[q] < value[piece]).sort((a, b) => value[a] - value[b]);
                 for (const cand of candidates) {
                     swap(piece, cand);
                     if (holds(boardTotals(board, mIdx))) {
@@ -850,6 +873,7 @@ export const runOptimizationEngine = async (
             type Spot = { mIdx: number; x: number; y: number; o: Orientation; nodes: number };
             let best = null as Spot | null;
             for (const mIdx of laOrder) {
+                if (!allowed[mIdx][it]) continue;
                 const board = (out ?? boards)[mIdx];
                 const before = boardTotals(board, mIdx);
                 const p = callerParams[mIdx];
@@ -989,7 +1013,7 @@ export const runOptimizationEngine = async (
     };
     // An already-optimal starting layout may never produce a new record, but its
     // unused learners still deserve the same harmless-space pass on the first report.
-    let pendingUpdate = learningAlgorithms.length > 0;
+    let pendingUpdate = sanitizedInitial || learningAlgorithms.length > 0;
     // For each machine, whose layout it reports: within each interchangeable group the layouts sorted best first (the group's
     // maximized value, Performance and Quality before Efficiency) go to the cards in order. A layout holding a machine's own
     // special module (fixed) stays where it is
@@ -1147,12 +1171,13 @@ export const runOptimizationEngine = async (
         let partner = -1, partnerOwner = -1, seen = 0;
         for (let i = 0; i < swapPieces.length; i++) {
             const b = swapPieces[i];
-            if (b === a || swapOwners[i] === owner || core.shape[b] !== shape) continue;
+            if (b === a || swapOwners[i] === owner || core.shape[b] !== shape
+                || !allowed[owner][b] || !allowed[swapOwners[i]][a]) continue;
             if (Math.random() * ++seen < 1) { partner = b; partnerOwner = swapOwners[i]; }
         }
         for (let i = 0; i < P; i++) {
             const b = searchPool[i];
-            if (b === a || itemStamp[b] === g || core.shape[b] !== shape || fixed[b] || core.white[b]) continue;
+            if (b === a || itemStamp[b] === g || core.shape[b] !== shape || fixed[b] || core.white[b] || !allowed[owner][b]) continue;
             if (Math.random() * ++seen < 1) { partner = b; partnerOwner = -1; }
         }
         if (partner === -1) return false;
@@ -1357,7 +1382,7 @@ export const runOptimizationEngine = async (
         const sumPE = s === 2 && params[k].sumPE;
         const placementCore = callerParams[k].target[s] !== null ? endCores[k][s] : core;
         for (const it of reps) {
-            if (it === skip) continue;
+            if (it === skip || !allowed[k][it]) continue;
             const orientations = core.orientations[it];
             if (!orientations) continue;
             for (let c = 0; c < CELLS; c++) {
@@ -1383,6 +1408,7 @@ export const runOptimizationEngine = async (
         const sumPE = s === 2 && params[k].sumPE;
         const placementCore = callerParams[k].target[s] !== null ? endCores[k][s] : core;
         for (const it of reps) {
+            if (!allowed[k][it]) continue;
             const orientations = core.orientations[it];
             if (!orientations) continue;
             for (let c = 0; c < CELLS; c++) {
@@ -1405,7 +1431,7 @@ export const runOptimizationEngine = async (
         const reps: number[] = [];
         const seen = new Set<number>();
         for (const it of searchPool) {
-            if (fixed[it] || polishOwner[it] === k) continue;
+            if (fixed[it] || polishOwner[it] === k || !allowed[k][it]) continue;
             const key = classOf[it] * (machineCount + 1) + polishOwner[it] + 1;
             if (seen.has(key)) continue;
             seen.add(key);
@@ -1445,7 +1471,7 @@ export const runOptimizationEngine = async (
             const owners: number[] = [];
             for (const [it, x, y, o] of [[mv.it, mv.x, mv.y, mv.o], [mv.it2, mv.x2, mv.y2, mv.o2]] as [number, number, number, Orientation | null][]) {
                 if (it < 0 || !o) continue;
-                if (!fits(polishBoard, x, y, o)) { owners.length = 0; owners.push(-2); break; }
+                if (!allowed[k][it] || !fits(polishBoard, x, y, o)) { owners.length = 0; owners.push(-2); break; }
                 put(polishBoard, x, y, o, it);
                 if (polishOwner[it] >= 0) owners.push(polishOwner[it]);
             }
@@ -1546,7 +1572,7 @@ export const runOptimizationEngine = async (
                     for (let c = 0; c < CELLS; c++) {
                         const a = board[c];
                         if (a < 0) continue;
-                        if (itemList[a].isStuck) continue;
+                        if (immovable[a]) continue;
                         if (fixed[a]) {
                             let entry = specials.find(e => e.item === a);
                             if (entry === undefined) { entry = { item: a, cells: [] }; specials.push(entry); }
@@ -1588,7 +1614,7 @@ export const runOptimizationEngine = async (
                     const b = currentBoards[mIdx];
                     for (let c = 0; c < CELLS; c++) {
                         const a = b[c];
-                        if (a < 0 || poolOf[a] < 0 || itemStamp[a] === g) continue;
+                        if (a < 0 || fixed[a] || poolOf[a] < 0 || itemStamp[a] === g) continue;
                         itemStamp[a] = g;
                         stealItems.push(poolOf[a]);
                         stealOwners.push(mIdx);
@@ -1712,6 +1738,7 @@ export const runOptimizationEngine = async (
 
                     if (placedMark[pi] === markGen || consumedMark[pi] === consumedGen) continue;
                     const it = searchPool[pi];
+                    if (!allowed[fillMIdx][it]) continue;
                     if (pass === 0 && p.aimQ !== undefined && (core.IQ[it] <= 0 || cur[1] >= p.aimQ)) continue;
                     if (pass === 0 && p.aimS !== undefined) {
                         const s = p.aimS;

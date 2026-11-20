@@ -5,6 +5,7 @@ import { getBaseStats, applyInternalEffects, PRECOMPUTED_ORIENTATIONS, roundStat
 import { MODULE_TEMPLATES, isMachineModuleName } from '../constants';
 import { readSolver, runSelectedSolver } from '../solvers';
 import { rememberSaveSettings } from '../saveSettings';
+import { allowsModuleEffects } from '../moduleRestrictions';
 
 
 const SHAPE_MAP: ModuleShape[] = ['Node1x2', 'L3', 'L4_Base', 'T4_Base', 'Square4_Base', 'L4_High', 'T4_High', 'Square4_High', 'P5', 'C5', 'Line4', 'Line2'];
@@ -663,6 +664,7 @@ export type MachineConfig = {
     degradationDays?: number;
     // Per-target projection indices for machines that use stats before/after a night's degradation.
     degradationUses?: Partial<Stats>;
+    forbiddenEffects?: readonly ItemEffect[];
     // Some machines (Deal Maker) never trigger the game's module-use learning hook.
     canTrainLearning?: boolean;
     maximizeStats: any;
@@ -776,8 +778,10 @@ export const buildSearchPool = (
     machines: MachineConfig[]
 ): InventoryItem[] => {
     const scoredKeys = STAT_KEYS.filter(key => machines.some(m => statIsScored(m, key)));
+    const restricted = machines.some(m => m.forbiddenEffects?.length);
+    const eligible = (item: InventoryItem) => machines.some(m => allowsModuleEffects(item, m.forbiddenEffects));
 
-    if (scoredKeys.length === 0) return inventory.filter(item => !isSpecialModule(item) && !item.isLocked);
+    if (scoredKeys.length === 0) return inventory.filter(item => !isSpecialModule(item) && !item.isLocked && (!restricted || eligible(item)));
 
     const keepCap = machines.length * MAX_PIECES_PER_BOARD;
     const kept: InventoryItem[] = [];
@@ -786,6 +790,8 @@ export const buildSearchPool = (
     for (const item of inventory) {
         if (isSpecialModule(item)) continue;
         if (item.isLocked) continue;
+        const eligibility = restricted ? machines.map(m => allowsModuleEffects(item, m.forbiddenEffects) ? '1' : '0').join('') : '';
+        if (restricted && !eligibility.includes('1')) continue;
 
         // Overclocks earn a tiebreak bonus of their own, so a stronger module of the same shape does not make them redundant
         if (item.color === 'White' || isOverclock(item)) {
@@ -794,7 +800,9 @@ export const buildSearchPool = (
         }
 
         const signature = PLACEMENT_DEPENDENT_EFFECTS.filter(eff => item.effects.includes(eff)).join('+');
-        const groupKey = `${item.shape}|${signature}`;
+        // A stronger module cannot displace a weaker one from the pool if it
+        // is barred from a machine that can use the weaker one.
+        const groupKey = `${item.shape}|${signature}|${eligibility}`;
 
         const stats = precomputedInternal.get(item.id)!;
         const tupleKey = scoredKeys.map(key => stats[key]).join(',');
@@ -1152,7 +1160,7 @@ export function useOptimizer(
     }, [inventory, tier, maximizeStats, targetStats, ignoreStats, statPriority, machineId, getUsedItems, board, isSolving, isExternallySolving]);
 
     const runOptimization = async (targetSteps?: MachineConfig['targetSteps'], sumPQ?: boolean, water?: boolean,
-        worthlessBelowSteps?: MachineConfig['worthlessBelowSteps'], sumPE?: boolean, performanceCap?: number, cheapEnergyAt?: number, qualityCap?: number, degradationDays?: number, canTrainLearning?: boolean, degradationUses?: Partial<Stats>) => {
+        worthlessBelowSteps?: MachineConfig['worthlessBelowSteps'], sumPE?: boolean, performanceCap?: number, cheapEnergyAt?: number, qualityCap?: number, degradationDays?: number, canTrainLearning?: boolean, degradationUses?: Partial<Stats>, forbiddenEffects?: MachineConfig['forbiddenEffects']) => {
         if (isSolving) {
             isSolvingRef.current = false;
             return;
@@ -1183,7 +1191,7 @@ export function useOptimizer(
         isSolvingRef.current = true;
 
         // The other solvers (solvers/index.ts) rank this card's stats by its own priorities, as their sites do
-        const config = { id: machineId, tier, targetStats, degradationDays, degradationUses, canTrainLearning, maximizeStats, ignoreStats, targetSteps, sumPQ, water, worthlessBelowSteps, sumPE, performanceCap, qualityCap, cheapEnergyAt, ...(readSolver() !== 'bloom' ? { statPriority } : {}) };
+        const config = { id: machineId, tier, targetStats, degradationDays, degradationUses, forbiddenEffects, canTrainLearning, maximizeStats, ignoreStats, targetSteps, sumPQ, water, worthlessBelowSteps, sumPE, performanceCap, qualityCap, cheapEnergyAt, ...(readSolver() !== 'bloom' ? { statPriority } : {}) };
 
         /* hoydoy's solver (solvers/index.ts) runs one search per card at once, as on his site, each kept off only what the other cards held
          * when it started: two of them could both take the same free module, and the page then showed it on both. A layout using a module

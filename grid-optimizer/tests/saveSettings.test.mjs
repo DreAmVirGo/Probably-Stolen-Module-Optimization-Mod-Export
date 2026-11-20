@@ -12,6 +12,7 @@ registerHooks({
     },
 });
 const { restoreSaveSettings, flushSaveSettings, machineWatchKey, readMachineWatched } = await import('../src/saveSettings.ts');
+const { machineRestrictionsKey, readForbiddenEffects } = await import('../src/moduleRestrictions.ts');
 
 const storage = new Map();
 globalThis.localStorage = {
@@ -210,4 +211,48 @@ test('only the exact false preference disables watching and unavailable storage 
         globalThis.localStorage = { getItem() { throw new Error('storage blocked'); } };
         assert.equal(readMachineWatched('m'), true);
     } finally { globalThis.localStorage = original; }
+});
+
+
+test('per-card effect exclusions stay independent through UID moves, reorder and same-slot backups', () => {
+    const a = machine('a', 11, 'Inv. > Furnace 1');
+    const b = machine('b', 22, 'Inv. > Furnace 2');
+    restore([a, b], 'save_14');
+    loadCurrent([b, a], 'save_14');
+    localStorage.setItem('optimizer_save_slot', '14');
+    localStorage.setItem(machineRestrictionsKey(a.id), JSON.stringify(['Degrading']));
+    localStorage.setItem(machineRestrictionsKey(b.id), JSON.stringify(['Overcharged']));
+    flushSaveSettings();
+    const incoming = [machine('a2', 11, 'Inv. > Bay 2 > Furnace 2'), machine('new', 33, a.machineType), machine('b2', 22, 'Inv. > Bay 2 > Furnace 1')];
+    const sorted = restoreSaveSettings('save_14_day42_20261120-120000', incoming, defaults, [], () => {}, 14);
+    assert.deepEqual(sorted.map(m => m.uid), [22, 11, 33]);
+    assert.deepEqual(readForbiddenEffects('a2'), ['Degrading']);
+    assert.deepEqual(readForbiddenEffects('b2'), ['Overcharged']);
+    assert.deepEqual(readForbiddenEffects('new'), []);
+    // Changing one list and clearing the other must not leak between cards.
+    loadCurrent(sorted, 'save_14_day42_20261120-120000');
+    localStorage.setItem(machineRestrictionsKey('a2'), JSON.stringify(['Degrading', 'Overcharged']));
+    localStorage.removeItem(machineRestrictionsKey('b2'));
+    flushSaveSettings();
+    const next = [machine('a3', 11, a.machineType), machine('b3', 22, b.machineType)];
+    restoreSaveSettings('save_14 (1)', next, defaults, [], () => {}, 14);
+    assert.deepEqual(readForbiddenEffects('a3'), ['Degrading', 'Overcharged']);
+    assert.deepEqual(readForbiddenEffects('b3'), []);
+    restoreSaveSettings('renamed slot 15', [machine('other', 11, a.machineType)], defaults, [], () => {}, 15);
+    assert.deepEqual(readForbiddenEffects('other'), []);
+});
+
+test('legacy missing effect exclusions and entirely new machines reset to the empty default', () => {
+    const legacy = machine('legacy', 11, 'Inv. > Furnace 1');
+    localStorage.setItem('optimizer_save_settings_save_1', JSON.stringify({
+        order: ['uid:11'], machines: { 'uid:11': { state: defaults(legacy) } },
+    }));
+    localStorage.setItem(machineRestrictionsKey(legacy.id), JSON.stringify(['Degrading', 'Overcharged']));
+    const fresh = machine('fresh', 22, 'Inv. > Furnace 2');
+    localStorage.setItem(machineRestrictionsKey(fresh.id), JSON.stringify(['Overcharged']));
+    restore([legacy, fresh]);
+    for (const id of ['legacy', 'fresh']) {
+        assert.equal(localStorage.getItem(machineRestrictionsKey(id)), null);
+        assert.deepEqual(readForbiddenEffects(id), []);
+    }
 });
